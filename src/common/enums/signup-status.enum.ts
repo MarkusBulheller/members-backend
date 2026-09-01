@@ -1,0 +1,5 @@
+export enum SignupStatus {
+  CONFIRMED = 'CONFIRMED',
+  WAITLISTED = 'WAITLISTED',
+  CANCELLED = 'CANCELLED',
+}
