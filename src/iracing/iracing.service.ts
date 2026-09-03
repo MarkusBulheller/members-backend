@@ -605,6 +605,35 @@ export class IracingService {
     return rows.map((r) => toNullableInt(r.subsession_id)).filter((id): id is number => id !== null);
   }
 
+  /** Same /results/search_series endpoint as searchSeriesResults, but scoped to one team across
+   * every series/week instead of one series' single week — the API accepts team_id directly with
+   * no series_id, exactly like an admin entering a positive team ID on the "Add Result" form (see
+   * fetchRaceResult's sign-comparison note). Used for one-off full-history pulls rather than the
+   * hourly car-usage scan, which is why it takes an arbitrary date range instead of "now". */
+  async searchTeamResults(
+    accessToken: string,
+    teamId: number,
+    startRangeBegin: Date,
+    startRangeEnd: Date,
+  ): Promise<number[]> {
+    const params = new URLSearchParams({
+      team_id: String(Math.abs(teamId)),
+      start_range_begin: startRangeBegin.toISOString(),
+      start_range_end: startRangeEnd.toISOString(),
+      official_only: 'true',
+      event_types: '5', // Race only — see searchSeriesResults' doc comment
+    });
+    const raw = await this.fetchDataApi<{ data?: { chunk_info?: unknown } } & { chunk_info?: unknown }>(
+      accessToken,
+      `/results/search_series?${params.toString()}`,
+    );
+    if (!raw) return [];
+
+    const chunkInfo = raw.data?.chunk_info ?? raw.chunk_info;
+    const rows = await this.fetchChunkedRows(chunkInfo);
+    return rows.map((r) => toNullableInt(r.subsession_id)).filter((id): id is number => id !== null);
+  }
+
   /** Which car every entry (one per team/driver, not deduplicated) raced in a session's Race — one
    * /results/get?subsession_id=X call, same as fetchRaceResult(), but returns every entry's car
    * instead of filtering down to one team's, for tallying series-wide car usage rather than

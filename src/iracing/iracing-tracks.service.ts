@@ -43,18 +43,20 @@ export class IracingTracksService {
     return { synced: rows.length };
   }
 
-  /** Same folder + filename + CDN base pattern as IracingCarsService.withResolvedImages(). */
+  /** Same folder + filename + CDN base pattern as IracingCarsService.withResolvedImages(),
+   * including the same logo/small_image asymmetry — see that method's comment. */
   private withResolvedImages(track: IracingTrack): IracingTrackWithImages {
     const base = this.configService.get<string>('IRACING_IMAGE_BASE_URL', 'https://images-static.iracing.com');
-    const resolve = (filename: string | null) => {
+    const resolveWithFolder = (filename: string | null) => {
       if (!filename || !track.folder) return null;
       return `${base}/${track.folder.replace(/^\/+|\/+$/g, '')}/${filename.replace(/^\/+/, '')}`;
     };
+    const resolveLogo = (path: string | null) => (path ? `${base}/${path.replace(/^\/+/, '')}` : null);
 
     return {
       ...track,
-      smallImageUrl: resolve(track.smallImage),
-      logoUrl: resolve(track.logo),
+      smallImageUrl: resolveWithFolder(track.smallImage),
+      logoUrl: resolveLogo(track.logo),
     };
   }
 

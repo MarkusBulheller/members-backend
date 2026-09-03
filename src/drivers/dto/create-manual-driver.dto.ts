@@ -1,5 +1,9 @@
 import { Type } from 'class-transformer';
-import { IsBoolean, IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+
+// Intl.supportedValuesOf('timeZone') returns the runtime's IANA tz database — see the identical
+// validation in UpdateDriverProfileDto.
+const VALID_TIMEZONES = Intl.supportedValuesOf('timeZone');
 
 export class CreateManualDriverDto {
   @IsString()
@@ -45,6 +49,10 @@ export class CreateManualDriverDto {
   @IsString()
   @MaxLength(200)
   preferredClasses?: string;
+
+  @IsOptional()
+  @IsIn(VALID_TIMEZONES)
+  timezone?: string;
 
   @IsOptional()
   @IsString()

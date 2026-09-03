@@ -44,6 +44,7 @@ export class DriversService {
       displayName: dto.displayName,
       country: dto.country ?? null,
       preferredClasses: dto.preferredClasses ?? null,
+      timezone: dto.timezone ?? null,
       bio: dto.bio ?? null,
       maxSuccessiveStints: dto.maxSuccessiveStints ?? null,
       startingDriver: dto.startingDriver ?? false,
@@ -93,6 +94,7 @@ export class DriversService {
       ...(dto.displayName !== undefined && { displayName: dto.displayName }),
       ...(dto.country !== undefined && { country: dto.country }),
       ...(dto.preferredClasses !== undefined && { preferredClasses: dto.preferredClasses }),
+      ...(dto.timezone !== undefined && { timezone: dto.timezone }),
       ...(dto.bio !== undefined && { bio: dto.bio }),
       ...(dto.maxSuccessiveStints !== undefined && { maxSuccessiveStints: dto.maxSuccessiveStints }),
       ...(dto.startingDriver !== undefined && { startingDriver: dto.startingDriver }),
@@ -166,12 +168,57 @@ export class DriversService {
     return this.driverProfilesRepository.save(profile);
   }
 
+  /** Admin override of a linked member's own profile fields (timezone, race preferences, etc.) —
+   * same shape and validation as updateOwnProfile, just addressable by id instead of gated to the
+   * caller's own userId. Rejects manual (unlinked) profiles since those already have their own
+   * admin-edit path (updateManualDriver) with a different field set. */
+  async updateProfileAsAdmin(id: string, dto: UpdateDriverProfileDto): Promise<DriverProfile> {
+    const profile = await this.findByIdOrThrow(id);
+    if (profile.userId === null) {
+      throw new ConflictException('This driver is not a portal member — edit them from the driver list instead.');
+    }
+
+    if (dto.iracingCustomerId && dto.iracingCustomerId !== profile.iracingCustomerId) {
+      await this.ensureIracingIdAvailable(dto.iracingCustomerId, profile.id);
+    }
+
+    Object.assign(profile, dto);
+    return this.driverProfilesRepository.save(profile);
+  }
+
   /** Applies a verified snapshot from iRacing's OAuth flow (see IracingService) — bypasses
    * UpdateDriverProfileDto since this is system-verified data, not user-submitted input. Used
-   * both for a member's manual "(Re-)link" click and for the weekly auto-refresh cron. */
+   * both for a member's manual "(Re-)link" click and for the weekly auto-refresh cron.
+   *
+   * Handles the "this person was already on the roster" case: a member's profile starts out
+   * empty at approval time (see createProfileForUser), with no idea a manually-added profile for
+   * the same real person might already exist (added by an admin, or auto-created from a race
+   * result import — see ensureManualDriverExists). If this iRacing ID is already claimed by such
+   * an *unlinked* profile, that one is absorbed instead of rejecting the link: it already carries
+   * this person's real race history and achievements (FK'd by profile id), so it survives —
+   * gaining the member's userId — while the freshly-created empty profile, which nothing points
+   * to yet, is discarded. A conflict is only a real error when the ID is already claimed by
+   * *another member's own* linked profile. */
   async applyIracingLink(userId: string, snapshot: IracingSnapshot): Promise<DriverProfile> {
     const profile = await this.findByUserIdOrThrow(userId);
-    await this.guardIracingIdChange(profile, snapshot.custId);
+    const custIdString = String(snapshot.custId);
+
+    if (custIdString !== profile.iracingCustomerId) {
+      const claimedBy = await this.driverProfilesRepository.findOne({ where: { iracingCustomerId: custIdString } });
+      if (claimedBy && claimedBy.id !== profile.id) {
+        if (claimedBy.userId !== null) {
+          throw new ConflictException('This iRacing account is already linked to another driver');
+        }
+        // Delete the empty profile *before* reassigning its userId to claimedBy — userId is
+        // unique, so both rows would momentarily hold the same value otherwise and the save
+        // below would fail the constraint.
+        await this.driverProfilesRepository.remove(profile);
+        claimedBy.userId = userId;
+        this.applySnapshotToProfile(claimedBy, snapshot);
+        return this.driverProfilesRepository.save(claimedBy);
+      }
+    }
+
     this.applySnapshotToProfile(profile, snapshot);
     return this.driverProfilesRepository.save(profile);
   }

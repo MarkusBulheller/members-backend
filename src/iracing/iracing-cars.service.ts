@@ -44,21 +44,24 @@ export class IracingCarsService {
     return { synced: rows.length };
   }
 
-  /** iRacing's /car/assets gives filenames + a separate `folder` — per iRacing's own note on
-   * that endpoint, the full path is folder/filename, relative to the CDN base. Base kept as a
-   * runtime config value (IRACING_IMAGE_BASE_URL) since it was confirmed empirically and may
-   * need correcting later. */
+  /** iRacing's /car/assets gives `small_image` as a bare filename that needs the per-car
+   * `folder` prefixed — per iRacing's own note on that endpoint, confirmed empirically. `logo`
+   * is different: it comes back as an already-complete path from the CDN root (e.g.
+   * "/img/logos/partners/pontiac-logo.png", sometimes under logos/brand or logos/cars instead —
+   * never under the car's own `folder`), so joining it with `folder` too produces a broken,
+   * double-nested URL. Base kept as a runtime config value (IRACING_IMAGE_BASE_URL). */
   private withResolvedImages(car: IracingCar): IracingCarWithImages {
     const base = this.configService.get<string>('IRACING_IMAGE_BASE_URL', 'https://images-static.iracing.com');
-    const resolve = (filename: string | null) => {
+    const resolveWithFolder = (filename: string | null) => {
       if (!filename || !car.folder) return null;
       return `${base}/${car.folder.replace(/^\/+|\/+$/g, '')}/${filename.replace(/^\/+/, '')}`;
     };
+    const resolveLogo = (path: string | null) => (path ? `${base}/${path.replace(/^\/+/, '')}` : null);
 
     return {
       ...car,
-      smallImageUrl: resolve(car.smallImage),
-      logoUrl: resolve(car.logo),
+      smallImageUrl: resolveWithFolder(car.smallImage),
+      logoUrl: resolveLogo(car.logo),
     };
   }
 

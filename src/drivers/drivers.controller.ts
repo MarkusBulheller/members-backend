@@ -50,6 +50,13 @@ export class DriversController {
     return this.driversService.updateManualDriver(id, dto);
   }
 
+  @Patch(':id/settings')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  updateProfileAsAdmin(@Param('id') id: string, @Body() dto: UpdateDriverProfileDto) {
+    return this.driversService.updateProfileAsAdmin(id, dto);
+  }
+
   @Post(':id/iracing-link')
   @UseGuards(RolesGuard)
   @Roles(Role.ADMIN)

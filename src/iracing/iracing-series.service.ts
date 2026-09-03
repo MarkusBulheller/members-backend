@@ -1,7 +1,7 @@
 import { BadGatewayException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { IracingSeriesSeason } from './iracing-series-season.entity.js';
 import { IracingService } from './iracing.service.js';
 
@@ -40,11 +40,44 @@ export class IracingSeriesService {
     return { ...season, logoUrl };
   }
 
+  /** iRacing issues a brand-new seasonId every ~12 weeks when a series rolls into its next
+   * season — since seasonId is this table's primary key, a naive sync would just insert that as
+   * an unrelated new row, silently losing the "Track Car Usage" opt-in and leaving the old,
+   * now-finished season cluttering the list forever. This carries the opt-in forward and archives
+   * whatever it's superseding, both keyed on seriesId (stable across a series' seasons, unlike
+   * seasonId). */
   async sync(code: string, codeVerifier: string): Promise<{ synced: number }> {
     const seasons = await this.iracingService.exchangeCodeForSeriesCatalog(code, codeVerifier);
     const syncedAt = new Date();
-    const entities = seasons.map((season) => this.seriesRepository.create({ ...season, syncedAt }));
+
+    const incomingSeriesIds = [...new Set(seasons.map((s) => s.seriesId))];
+    const previouslyTracked = await this.seriesRepository.find({
+      where: { seriesId: In(incomingSeriesIds), trackCarUsage: true },
+    });
+    const trackedSeriesIds = new Set(previouslyTracked.map((s) => s.seriesId));
+
+    const entities = seasons.map((season) =>
+      this.seriesRepository.create({ ...season, syncedAt, trackCarUsage: trackedSeriesIds.has(season.seriesId) }),
+    );
     await this.seriesRepository.save(entities);
+
+    // Anything already in the table for these same series, that this sync did NOT just return,
+    // is by definition a previous (now-finished) season of it — iRacing's catalog only ever
+    // lists currently-active seasons, so a seriesId's old seasonId simply stops appearing here
+    // once it rolls over.
+    const incomingSeasonIds = seasons.map((s) => s.seasonId);
+    if (incomingSeriesIds.length > 0) {
+      await this.seriesRepository
+        .createQueryBuilder()
+        .update(IracingSeriesSeason)
+        .set({ active: false, trackCarUsage: false })
+        .where('series_id IN (:...seriesIds)', { seriesIds: incomingSeriesIds })
+        .andWhere(incomingSeasonIds.length > 0 ? 'season_id NOT IN (:...seasonIds)' : '1=1', {
+          seasonIds: incomingSeasonIds,
+        })
+        .execute();
+    }
+
     return { synced: entities.length };
   }
 

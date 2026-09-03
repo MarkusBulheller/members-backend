@@ -137,7 +137,7 @@ export class RaceResultsService {
     const track = await this.tracksService.ensureExists(trackName, {
       category: catalogTrack?.category ?? null,
       location: catalogTrack?.location ?? null,
-      imageUrl: catalogTrack?.smallImageUrl ?? null,
+      imageUrl: catalogTrack?.logoUrl ?? null,
     });
 
     const raceResult = this.raceResultsRepository.create({
