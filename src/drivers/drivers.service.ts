@@ -1,6 +1,9 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { unlink } from 'node:fs/promises';
+import { join } from 'node:path';
 import { Repository } from 'typeorm';
+import { AVATARS_UPLOAD_DIR } from './avatar-multer.config.js';
 import { DriverProfile } from './driver-profile.entity.js';
 import { CreateManualDriverDto } from './dto/create-manual-driver.dto.js';
 import { UpdateDriverProfileDto } from './dto/update-driver-profile.dto.js';
@@ -20,6 +23,8 @@ export interface IracingSnapshot {
 
 @Injectable()
 export class DriversService {
+  private readonly logger = new Logger(DriversService.name);
+
   constructor(
     @InjectRepository(DriverProfile)
     private readonly driverProfilesRepository: Repository<DriverProfile>,
@@ -221,6 +226,54 @@ export class DriversService {
 
     this.applySnapshotToProfile(profile, snapshot);
     return this.driverProfilesRepository.save(profile);
+  }
+
+  async setOwnAvatar(userId: string, file: Express.Multer.File): Promise<DriverProfile> {
+    const profile = await this.findByUserIdOrThrow(userId);
+    return this.applyAvatarFile(profile, file);
+  }
+
+  async removeOwnAvatar(userId: string): Promise<DriverProfile> {
+    const profile = await this.findByUserIdOrThrow(userId);
+    return this.clearAvatarFile(profile);
+  }
+
+  /** Admin equivalent of setOwnAvatar/removeOwnAvatar — works for any driver, manual or linked,
+   * matching updateProfileAsAdmin's "admin can do on behalf of" scope. */
+  async setAvatarAsAdmin(id: string, file: Express.Multer.File): Promise<DriverProfile> {
+    const profile = await this.findByIdOrThrow(id);
+    return this.applyAvatarFile(profile, file);
+  }
+
+  async removeAvatarAsAdmin(id: string): Promise<DriverProfile> {
+    const profile = await this.findByIdOrThrow(id);
+    return this.clearAvatarFile(profile);
+  }
+
+  private async applyAvatarFile(profile: DriverProfile, file: Express.Multer.File): Promise<DriverProfile> {
+    await this.deleteAvatarFileIfPresent(profile.avatarUrl);
+    profile.avatarUrl = `/uploads/avatars/${file.filename}`;
+    return this.driverProfilesRepository.save(profile);
+  }
+
+  private async clearAvatarFile(profile: DriverProfile): Promise<DriverProfile> {
+    await this.deleteAvatarFileIfPresent(profile.avatarUrl);
+    profile.avatarUrl = null;
+    return this.driverProfilesRepository.save(profile);
+  }
+
+  /** Avatar is a single mutable slot (unlike Livery's many-per-car list), so every set/clear
+   * cleans up whatever file was there before it — otherwise old uploads would just accumulate on
+   * disk forever. */
+  private async deleteAvatarFileIfPresent(avatarUrl: string | null): Promise<void> {
+    if (!avatarUrl) return;
+    const filename = avatarUrl.split('/').pop();
+    if (!filename) return;
+    try {
+      await unlink(join(AVATARS_UPLOAD_DIR, filename));
+    } catch (error) {
+      this.logger.warn(`Could not delete avatar file "${filename}": ${(error as Error).message}`);
+    }
   }
 
   private applySnapshotToProfile(profile: DriverProfile, snapshot: IracingSnapshot): void {

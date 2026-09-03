@@ -25,6 +25,13 @@ export class DriverProfile {
   @Column({ name: 'display_name' })
   displayName: string;
 
+  /** Relative path under /uploads (e.g. "/uploads/avatars/<uuid>.png") — resolved to a full CDN
+   * URL at read time on the frontend, same convention as Livery.imageUrl/Car.imageUrl. Settable
+   * by the member themselves (see DriversController's "me/avatar" routes) or by an admin for any
+   * driver, manual or linked (":id/avatar"). */
+  @Column({ name: 'avatar_url', type: 'varchar', nullable: true })
+  avatarUrl: string | null;
+
   /** The next five fields are a snapshot captured server-side at link time (see
    * members-backend/src/iracing/) via iRacing's OAuth — "iracing.profile" for name/cust_id,
    * "iracing.auth" + the Data API for location and Sports Car license stats. No refresh token
