@@ -1,6 +1,7 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { IracingAdminTokenService } from './iracing-admin-token.service.js';
 import { IracingCarUsageScannedSubsession } from './iracing-car-usage-scanned-subsession.entity.js';
 import { IracingCarUsageStat } from './iracing-car-usage-stat.entity.js';
 import { IracingSeriesSeason } from './iracing-series-season.entity.js';
@@ -28,6 +29,7 @@ export class IracingCarUsageService {
     @InjectRepository(IracingCarUsageScannedSubsession)
     private readonly scannedRepository: Repository<IracingCarUsageScannedSubsession>,
     private readonly iracingService: IracingService,
+    private readonly adminTokenService: IracingAdminTokenService,
   ) {}
 
   listTrackedSeasons(): Promise<IracingSeriesSeason[]> {
@@ -72,6 +74,58 @@ export class IracingCarUsageService {
       now,
     );
 
+    const countedCount = await this.scanSubsessions(season.seasonId, currentWeek, subsessionIds, accessToken);
+    this.logger.log(
+      `Season ${season.seasonId} (${season.seriesName}) week ${currentWeek}: ${countedCount} new result(s) since ${scanStart.toISOString()} (${subsessionIds.length} in range)`,
+    );
+  }
+
+  /** On-demand backfill for an admin who wants results older than the hourly scan's lookback
+   * window — e.g. right after switching trackCarUsage on mid-season, or catching up a week the
+   * live scan missed. Unlike scanSeason (always just the currently-live week), this walks every
+   * race week whose window falls at or after `since`, using [since, now] as the search range for
+   * each — the API still scopes by race_week_num, so a broad range here just means "anything in
+   * this particular week that happened after `since`," not a cross-week search. */
+  async scanSince(seasonId: number, since: Date, adminUserId: string): Promise<void> {
+    if (Number.isNaN(since.getTime())) {
+      throw new BadRequestException('Invalid "since" date');
+    }
+    const season = await this.seasonsRepository.findOne({ where: { seasonId } });
+    if (!season) {
+      throw new NotFoundException('Series season not found');
+    }
+
+    const now = new Date();
+    const weeks = this.raceWeeksInRange(season, since, now);
+    if (weeks.length === 0) {
+      this.logger.log(`Season ${season.seasonId} (${season.seriesName}): no race weeks fall on or after ${since.toISOString()}`);
+      return;
+    }
+
+    const accessToken = await this.adminTokenService.getAccessToken(adminUserId);
+    for (const raceWeekNum of weeks) {
+      const subsessionIds = await this.iracingService.searchSeriesResults(
+        accessToken,
+        season.seriesId,
+        raceWeekNum,
+        since,
+        now,
+      );
+      const countedCount = await this.scanSubsessions(season.seasonId, raceWeekNum, subsessionIds, accessToken);
+      this.logger.log(
+        `Season ${season.seasonId} (${season.seriesName}) week ${raceWeekNum}: ${countedCount} new result(s) since ${since.toISOString()} (${subsessionIds.length} in range)`,
+      );
+    }
+  }
+
+  /** Shared by scanSeason and scanSince — tallies every not-yet-seen subsession in the given list
+   * against (seasonId, raceWeekNum), same dedup/skip/error-handling rules either way. */
+  private async scanSubsessions(
+    seasonId: number,
+    raceWeekNum: number,
+    subsessionIds: number[],
+    accessToken: string,
+  ): Promise<number> {
     let countedCount = 0;
     for (const subsessionId of subsessionIds) {
       const alreadyScanned = await this.scannedRepository.findOne({ where: { subsessionId } });
@@ -86,18 +140,16 @@ export class IracingCarUsageService {
         if (cars.length === 0) continue;
         countedCount += 1;
         for (const car of cars) {
-          await this.incrementCarUsage(season.seasonId, currentWeek, car.carId, car.carName, car.carClass);
+          await this.incrementCarUsage(seasonId, raceWeekNum, car.carId, car.carName, car.carClass);
         }
         await this.scannedRepository.save(this.scannedRepository.create({ subsessionId }));
       } catch (error) {
         // One bad subsession shouldn't sink the whole scan — log and keep going. Deliberately
-        // NOT marked scanned, so the next scan (still within the lookback window) retries it.
+        // NOT marked scanned, so a later scan covering this range retries it.
         this.logger.warn(`Failed to fetch car usage for subsession ${subsessionId}: ${(error as Error).message}`);
       }
     }
-    this.logger.log(
-      `Season ${season.seasonId} (${season.seriesName}) week ${currentWeek}: ${countedCount} new result(s) since ${scanStart.toISOString()} (${subsessionIds.length} in range)`,
-    );
+    return countedCount;
   }
 
   private async incrementCarUsage(
@@ -120,24 +172,43 @@ export class IracingCarUsageService {
   /** schedule is the raw per-race-week array from /series/season_schedule (see
    * IracingSeriesService) — each entry carries its own start_date/week_end_time, confirmed
    * against the community iracingdataapi client's schema (not iRacing's own public docs). */
+  private parseScheduleEntry(entry: unknown): { raceWeekNum: number; startDate: Date; weekEnd: Date } | null {
+    const week = entry as Record<string, unknown>;
+    const raceWeekNum = typeof week.race_week_num === 'number' ? week.race_week_num : null;
+    const startDate = typeof week.start_date === 'string' ? new Date(week.start_date) : null;
+    const weekEnd = typeof week.week_end_time === 'string' ? new Date(week.week_end_time) : null;
+    if (
+      raceWeekNum === null ||
+      startDate === null ||
+      weekEnd === null ||
+      Number.isNaN(startDate.getTime()) ||
+      Number.isNaN(weekEnd.getTime())
+    ) {
+      return null;
+    }
+    return { raceWeekNum, startDate, weekEnd };
+  }
+
   private findCurrentRaceWeek(season: IracingSeriesSeason, now: Date): number | null {
     for (const entry of season.schedule) {
-      const week = entry as Record<string, unknown>;
-      const raceWeekNum = typeof week.race_week_num === 'number' ? week.race_week_num : null;
-      const startDate = typeof week.start_date === 'string' ? new Date(week.start_date) : null;
-      const weekEnd = typeof week.week_end_time === 'string' ? new Date(week.week_end_time) : null;
-      if (
-        raceWeekNum !== null &&
-        startDate !== null &&
-        weekEnd !== null &&
-        !Number.isNaN(startDate.getTime()) &&
-        !Number.isNaN(weekEnd.getTime()) &&
-        now >= startDate &&
-        now < weekEnd
-      ) {
-        return raceWeekNum;
+      const week = this.parseScheduleEntry(entry);
+      if (week && now >= week.startDate && now < week.weekEnd) {
+        return week.raceWeekNum;
       }
     }
     return null;
+  }
+
+  /** Every race week that's actually started by `now` and hadn't already ended before `since` —
+   * i.e. every week scanSince should bother searching. */
+  private raceWeeksInRange(season: IracingSeriesSeason, since: Date, now: Date): number[] {
+    const weeks: number[] = [];
+    for (const entry of season.schedule) {
+      const week = this.parseScheduleEntry(entry);
+      if (week && week.startDate <= now && week.weekEnd >= since) {
+        weeks.push(week.raceWeekNum);
+      }
+    }
+    return weeks;
   }
 }

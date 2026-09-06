@@ -92,6 +92,18 @@ export class IracingController {
     return this.iracingCarUsageService.getTierlist(Number(seasonId), Number(raceWeekNum));
   }
 
+  @Post('series/:seasonId/car-usage/sync-since')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  async syncCarUsageSince(
+    @Param('seasonId') seasonId: string,
+    @Body('since') since: string,
+    @CurrentUser() user: User,
+  ) {
+    await this.iracingCarUsageService.scanSince(Number(seasonId), new Date(since), user.id);
+    return { ok: true };
+  }
+
   @Get('drivers/search')
   @UseGuards(RolesGuard)
   @Roles(Role.ADMIN)
