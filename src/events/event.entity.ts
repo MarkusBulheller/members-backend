@@ -48,7 +48,7 @@ export class Event {
   @Column({ name: 'signup_deadline', type: 'timestamptz', nullable: true })
   signupDeadline: Date | null;
 
-  /** One of a fixed preset list (160/180/360/600/720/1440 — see create-event.dto.ts's @IsIn) —
+  /** One of a fixed preset list (160/180/360/480/600/720/1440 — see create-event.dto.ts's @IsIn) —
    * stored in minutes rather than hours so non-whole-hour lengths like 2h40m are exact. Drives
    * how the admin frames the timeslot options below (not otherwise validated against
    * startsAt/endsAt, which stay free-form). */

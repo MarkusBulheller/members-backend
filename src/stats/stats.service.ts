@@ -65,7 +65,7 @@ const LEADERBOARD_SIZE = 10;
 
 // Mirrors members-portal/src/lib/lapTime.ts's guessRaceLength() — kept as a small duplicated
 // pure function rather than a shared package, since these are two separate npm projects.
-const STANDARD_RACE_LENGTHS_MIN = [160, 180, 360, 720, 1440];
+const STANDARD_RACE_LENGTHS_MIN = [160, 180, 360, 480, 600, 720, 1440];
 
 function formatDuration(ms: number): string {
   const totalMinutes = Math.round(ms / 60000);
