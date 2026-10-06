@@ -44,8 +44,8 @@ export class CreateEventDto {
   signupDeadline?: string;
 
   /** Minutes — a fixed preset list (mirrored on the frontend, see types/raceLength.ts):
-   * 2h40m / 3h / 6h / 8h / 10h / 12h / 24h. */
-  @IsIn([160, 180, 360, 480, 600, 720, 1440])
+   * 2h40m / 3h / 4h / 6h / 8h / 10h / 12h / 24h. */
+  @IsIn([160, 180, 240, 360, 480, 600, 720, 1440])
   raceLengthMinutes: number;
 
   /** Candidate start times (ISO datetimes) — see EventTimeslot. Replaces the whole set on
