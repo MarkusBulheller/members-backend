@@ -1,10 +1,15 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { DiscordBotModule } from '../discord-bot/discord-bot.module.js';
+import { DriverProfile } from '../drivers/driver-profile.entity.js';
+import { User } from '../users/user.entity.js';
 import { EventSignup } from './event-signup.entity.js';
 import { EventTeamDriverSettingsController } from './event-team-driver-settings.controller.js';
 import { EventTeamDriverSettingsService } from './event-team-driver-settings.service.js';
 import { EventTeamDriverSettings } from './event-team-driver-settings.entity.js';
+import { EventTeamDummyDriversController } from './event-team-dummy-drivers.controller.js';
+import { EventTeamDummyDriversService } from './event-team-dummy-drivers.service.js';
+import { EventTeamDummyDriver } from './event-team-dummy-driver.entity.js';
 import { EventTeamStint } from './event-team-stint.entity.js';
 import { EventTeamStintsController } from './event-team-stints.controller.js';
 import { EventTeamStintsService } from './event-team-stints.service.js';
@@ -19,7 +24,17 @@ import { PublicEventsController } from './public-events.controller.js';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Event, EventSignup, EventTimeslot, EventTeam, EventTeamStint, EventTeamDriverSettings]),
+    TypeOrmModule.forFeature([
+      Event,
+      EventSignup,
+      EventTimeslot,
+      EventTeam,
+      EventTeamStint,
+      EventTeamDriverSettings,
+      EventTeamDummyDriver,
+      User,
+      DriverProfile,
+    ]),
     DiscordBotModule,
   ],
   controllers: [
@@ -27,8 +42,15 @@ import { PublicEventsController } from './public-events.controller.js';
     EventTeamsController,
     EventTeamStintsController,
     EventTeamDriverSettingsController,
+    EventTeamDummyDriversController,
     PublicEventsController,
   ],
-  providers: [EventsService, EventTeamsService, EventTeamStintsService, EventTeamDriverSettingsService],
+  providers: [
+    EventsService,
+    EventTeamsService,
+    EventTeamStintsService,
+    EventTeamDriverSettingsService,
+    EventTeamDummyDriversService,
+  ],
 })
 export class EventsModule {}

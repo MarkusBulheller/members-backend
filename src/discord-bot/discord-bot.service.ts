@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Sim } from '../common/enums/sim.enum.js';
 import { Event } from '../events/event.entity.js';
 import { IracingSeriesService } from '../iracing/iracing-series.service.js';
 import { DiscordBotSettingsService } from './discord-bot-settings.service.js';
@@ -94,6 +95,7 @@ export class DiscordBotService {
     const lengthLabel = lengthM === 0 ? `${lengthH}h` : `${lengthH}h ${lengthM}m`;
 
     const details = [
+      `**Sim:** ${event.sim === Sim.LMU ? 'Le Mans Ultimate' : 'iRacing'}`,
       `**Track:** ${event.track.name}`,
       `**Class${event.carClasses.length > 1 ? 'es' : ''}:** ${event.carClasses.join(' / ')}`,
       `**Length:** ${lengthLabel}`,

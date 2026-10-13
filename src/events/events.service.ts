@@ -1,9 +1,13 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Not, Repository } from 'typeorm';
+import { toDecimalString } from '../common/decimal.util.js';
 import { EventStatus } from '../common/enums/event-status.enum.js';
 import { SignupStatus } from '../common/enums/signup-status.enum.js';
+import { UserStatus } from '../common/enums/user-status.enum.js';
 import { DiscordBotService } from '../discord-bot/discord-bot.service.js';
+import { User } from '../users/user.entity.js';
+import { AdminAddSignupDto } from './dto/admin-add-signup.dto.js';
 import { CreateEventDto } from './dto/create-event.dto.js';
 import { SignupDto } from './dto/signup.dto.js';
 import { UpdateEventDto } from './dto/update-event.dto.js';
@@ -97,6 +101,8 @@ export class EventsService {
     private readonly eventTeamsRepository: Repository<EventTeam>,
     @InjectRepository(EventTeamStint)
     private readonly eventTeamStintsRepository: Repository<EventTeamStint>,
+    @InjectRepository(User)
+    private readonly usersRepository: Repository<User>,
     private readonly discordBotService: DiscordBotService,
   ) {}
 
@@ -168,8 +174,12 @@ export class EventsService {
   }
 
   async create(dto: CreateEventDto, createdByUserId: string): Promise<Event> {
-    const { timeslots, ...eventData } = dto;
-    const event = this.eventsRepository.create({ ...eventData, createdByUserId });
+    const { timeslots, fuelLimitPercent, ...eventData } = dto;
+    const event = this.eventsRepository.create({
+      ...eventData,
+      fuelLimitPercent: toDecimalString(fuelLimitPercent) ?? null,
+      createdByUserId,
+    });
     const saved = await this.eventsRepository.save(event);
 
     const timeslotRows = timeslots.map((startsAt) =>
@@ -187,8 +197,9 @@ export class EventsService {
   async update(id: string, dto: UpdateEventDto): Promise<Event> {
     const event = await this.findRawByIdOrThrow(id);
     const wasPublished = event.status === EventStatus.PUBLISHED;
-    const { timeslots, ...eventData } = dto;
+    const { timeslots, fuelLimitPercent, ...eventData } = dto;
     Object.assign(event, eventData);
+    if (fuelLimitPercent !== undefined) event.fuelLimitPercent = toDecimalString(fuelLimitPercent) ?? null;
     await this.eventsRepository.save(event);
 
     if (timeslots) {
@@ -310,40 +321,31 @@ export class EventsService {
    * class), `null` clears it, and a value sets it. */
   async signup(eventId: string, userId: string, dto: SignupDto): Promise<EventSignup> {
     const event = await this.findRawByIdOrThrow(eventId);
-    if (event.status !== EventStatus.PUBLISHED) {
-      throw new ForbiddenException('This event is not open for signups');
-    }
-
-    if (dto.carClass && !event.carClasses.includes(dto.carClass)) {
-      throw new ForbiddenException('That car class is not offered for this event');
-    }
-    if (dto.secondaryCarClass && !event.carClasses.includes(dto.secondaryCarClass)) {
-      throw new ForbiddenException('That secondary car class is not offered for this event');
-    }
-    if (dto.availableHours && !this.hoursFitEventTimeslots(dto.availableHours, event)) {
-      throw new ForbiddenException("Availability hour doesn't fall within any of this event's timeslots");
-    }
-
-    let timeslots: EventTimeslot[] | undefined;
-    if (dto.timeslotIds !== undefined) {
-      timeslots = dto.timeslotIds.length
-        ? await this.timeslotsRepository.find({ where: { id: In(dto.timeslotIds), eventId } })
-        : [];
-    }
-
     const existing = await this.signupsRepository.findOne({
       where: { eventId, userId },
       relations: { timeslots: true },
     });
 
+    // PUBLISHED is fully open (new signups, edits, re-activations). Once signups close — the
+    // phase where teams get built and stints planned — a driver who's already in can keep
+    // adjusting their own availability, but nobody new can join (and a cancelled signup can't
+    // be revived), since the admin is now placing a fixed set of drivers onto teams.
+    const isOpen = event.status === EventStatus.PUBLISHED;
+    const isEditingActiveSignup =
+      event.status === EventStatus.SIGNUPS_CLOSED && !!existing && existing.status !== SignupStatus.CANCELLED;
+    if (!isOpen && !isEditingActiveSignup) {
+      throw new ForbiddenException(
+        event.status === EventStatus.SIGNUPS_CLOSED
+          ? 'Signups are closed — only drivers already signed up can update their availability'
+          : 'This event is not open for signups',
+      );
+    }
+
+    const timeslots = await this.validateSignupChange(event, dto);
+
     if (existing) {
       existing.status = SignupStatus.CONFIRMED;
-      if (dto.carId !== undefined) existing.carId = dto.carId;
-      if (dto.carClass !== undefined) existing.carClass = dto.carClass;
-      if (dto.secondaryCarClass !== undefined) existing.secondaryCarClass = dto.secondaryCarClass;
-      if (dto.notes !== undefined) existing.notes = dto.notes;
-      if (dto.availableHours !== undefined) existing.availableHours = dto.availableHours.map((h) => new Date(h));
-      if (timeslots !== undefined) existing.timeslots = timeslots;
+      this.applySignupFields(existing, dto, timeslots);
       return this.signupsRepository.save(existing);
     }
 
@@ -359,6 +361,104 @@ export class EventsService {
       timeslots: timeslots ?? [],
     });
     return this.signupsRepository.save(signup);
+  }
+
+  /** Admin edit of another driver's signup (start times, car class, stint hours, notes) — same
+   * field semantics as signup(), but keyed by the signup rather than the caller, with no event
+   * status gate (an admin fixing availability mid team-building is the whole point) and without
+   * touching the signup's own status, so editing a cancelled signup doesn't silently revive it. */
+  async adminUpdateSignup(eventId: string, signupId: string, dto: SignupDto): Promise<EventSignup> {
+    const event = await this.findRawByIdOrThrow(eventId);
+    const signup = await this.signupsRepository.findOne({
+      where: { id: signupId, eventId },
+      relations: { timeslots: true },
+    });
+    if (!signup) {
+      throw new NotFoundException('Signup not found');
+    }
+
+    const timeslots = await this.validateSignupChange(event, dto);
+    this.applySignupFields(signup, dto, timeslots);
+    return this.signupsRepository.save(signup);
+  }
+
+  /** Admin puts an approved member on an event (and, if given, straight onto one of its teams)
+   * without the member signing up first — for filling a crew with someone who never visited the
+   * signup page. No event-status gate, same as the other admin signup edits. Reactivates a
+   * cancelled signup rather than colliding with it. When the team has a committed timeslot the
+   * signup is tied to that start time, so the driver shows up in that team's availability grid
+   * right away; with no hours set, planning treats them as free for any stint until someone
+   * fills their availability in. */
+  async adminAddSignup(eventId: string, dto: AdminAddSignupDto): Promise<EventSignup> {
+    const event = await this.findRawByIdOrThrow(eventId);
+
+    const user = await this.usersRepository.findOne({ where: { id: dto.userId } });
+    if (!user || user.status !== UserStatus.APPROVED) {
+      throw new NotFoundException('Approved member not found');
+    }
+
+    let team: EventTeam | null = null;
+    if (dto.eventTeamId) {
+      team = await this.eventTeamsRepository.findOne({ where: { id: dto.eventTeamId, eventId } });
+      if (!team) {
+        throw new NotFoundException('Team not found for this event');
+      }
+    }
+    const teamSlot = team?.timeslotId ? event.timeslots.find((slot) => slot.id === team.timeslotId) : undefined;
+
+    const existing = await this.signupsRepository.findOne({
+      where: { eventId, userId: dto.userId },
+      relations: { timeslots: true },
+    });
+    if (existing && existing.status !== SignupStatus.CANCELLED) {
+      throw new ConflictException('This member is already signed up for the event');
+    }
+
+    if (existing) {
+      existing.status = SignupStatus.CONFIRMED;
+      existing.eventTeamId = team?.id ?? null;
+      if (teamSlot && existing.timeslots.length === 0) existing.timeslots = [teamSlot];
+      return this.signupsRepository.save(existing);
+    }
+
+    return this.signupsRepository.save(
+      this.signupsRepository.create({
+        eventId,
+        userId: dto.userId,
+        status: SignupStatus.CONFIRMED,
+        eventTeamId: team?.id ?? null,
+        timeslots: teamSlot ? [teamSlot] : [],
+        availableHours: [],
+      }),
+    );
+  }
+
+  /** Shared validation for signup() and adminUpdateSignup(); returns the resolved timeslot rows
+   * when the dto sets them (ids from other events are silently dropped by the eventId filter). */
+  private async validateSignupChange(event: Event, dto: SignupDto): Promise<EventTimeslot[] | undefined> {
+    if (dto.carClass && !event.carClasses.includes(dto.carClass)) {
+      throw new ForbiddenException('That car class is not offered for this event');
+    }
+    if (dto.secondaryCarClass && !event.carClasses.includes(dto.secondaryCarClass)) {
+      throw new ForbiddenException('That secondary car class is not offered for this event');
+    }
+    if (dto.availableHours && !this.hoursFitEventTimeslots(dto.availableHours, event)) {
+      throw new ForbiddenException("Availability hour doesn't fall within any of this event's timeslots");
+    }
+
+    if (dto.timeslotIds === undefined) return undefined;
+    return dto.timeslotIds.length
+      ? this.timeslotsRepository.find({ where: { id: In(dto.timeslotIds), eventId: event.id } })
+      : [];
+  }
+
+  private applySignupFields(signup: EventSignup, dto: SignupDto, timeslots: EventTimeslot[] | undefined): void {
+    if (dto.carId !== undefined) signup.carId = dto.carId;
+    if (dto.carClass !== undefined) signup.carClass = dto.carClass;
+    if (dto.secondaryCarClass !== undefined) signup.secondaryCarClass = dto.secondaryCarClass;
+    if (dto.notes !== undefined) signup.notes = dto.notes;
+    if (dto.availableHours !== undefined) signup.availableHours = dto.availableHours.map((h) => new Date(h));
+    if (timeslots !== undefined) signup.timeslots = timeslots;
   }
 
   /** Every hour must land inside at least one of the event's timeslot windows — since a driver

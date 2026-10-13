@@ -5,16 +5,32 @@ import {
   IsEnum,
   IsIn,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
+  Max,
   MaxLength,
   Min,
   ValidateIf,
 } from 'class-validator';
 import { EventStatus } from '../../common/enums/event-status.enum.js';
+import { Sim } from '../../common/enums/sim.enum.js';
 
 export class CreateEventDto {
+  /** Omitted = IRACING (the column default on create, unchanged on update). */
+  @IsOptional()
+  @IsEnum(Sim)
+  sim?: Sim;
+
+  /** iRacing fuel-fill limit, as a percent of the car's max tank (1-100). Null clears it. */
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsNumber()
+  @Min(1)
+  @Max(100)
+  fuelLimitPercent?: number | null;
+
   @IsString()
   @MaxLength(150)
   title: string;

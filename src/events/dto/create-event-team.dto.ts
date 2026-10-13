@@ -73,6 +73,13 @@ export class CreateEventTeamDto {
   @Min(0)
   formationLapFuelLiters?: number | null;
 
+  /** Tank size override in liters — null clears it back to the car's own tank size. */
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsNumber()
+  @Min(0)
+  fuelTankCapacityLiters?: number | null;
+
   /** In-game clock time this crew's first stint starts at, "HH:MM" (24h). */
   @IsOptional()
   @ValidateIf((_, value) => value !== null)

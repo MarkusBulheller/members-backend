@@ -5,6 +5,7 @@ import { Role } from '../common/enums/role.enum.js';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
 import { RolesGuard } from '../common/guards/roles.guard.js';
 import { User } from '../users/user.entity.js';
+import { AdminAddSignupDto } from './dto/admin-add-signup.dto.js';
 import { AssignSignupTeamDto } from './dto/assign-signup-team.dto.js';
 import { CreateEventDto } from './dto/create-event.dto.js';
 import { OverrideSignupDto } from './dto/override-signup.dto.js';
@@ -64,11 +65,25 @@ export class EventsController {
     return this.eventsService.cancelSignup(id, user.id);
   }
 
+  @Post(':id/signups')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  addSignup(@Param('id') id: string, @Body() dto: AdminAddSignupDto) {
+    return this.eventsService.adminAddSignup(id, dto);
+  }
+
   @Patch(':id/signups/:signupId')
   @UseGuards(RolesGuard)
   @Roles(Role.ADMIN)
   overrideSignup(@Param('signupId') signupId: string, @Body() dto: OverrideSignupDto) {
     return this.eventsService.adminOverrideSignup(signupId, dto.status);
+  }
+
+  @Patch(':id/signups/:signupId/details')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  updateSignupDetails(@Param('id') id: string, @Param('signupId') signupId: string, @Body() dto: SignupDto) {
+    return this.eventsService.adminUpdateSignup(id, signupId, dto);
   }
 
   @Patch(':id/signups/:signupId/team')

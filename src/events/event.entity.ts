@@ -10,6 +10,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { EventStatus } from '../common/enums/event-status.enum.js';
+import { Sim } from '../common/enums/sim.enum.js';
 import { Track } from '../tracks/track.entity.js';
 import { EventTimeslot } from './event-timeslot.entity.js';
 
@@ -62,6 +63,17 @@ export class Event {
 
   @Column({ type: 'enum', enum: EventStatus, default: EventStatus.DRAFT })
   status: EventStatus;
+
+  /** Defaults to IRACING so every event that existed before this column did stays an iRacing
+   * event. Only gates iRacing-specific extras (series/weather linking, team roster checks). */
+  @Column({ type: 'enum', enum: Sim, default: Sim.IRACING })
+  sim: Sim;
+
+  /** iRacing only: the session limits how full the tank can be filled, as a percentage of the
+   * car's max (e.g. 98.00 = 98%). Null = no limit. Decimal columns come back as strings, same
+   * convention as the other decimals. Applied on the plan page on top of the team's tank size. */
+  @Column({ name: 'fuel_limit_percent', type: 'decimal', precision: 5, scale: 2, nullable: true })
+  fuelLimitPercent: string | null;
 
   /** Links this event to a specific iRacing series-season week (IracingSeriesSeason.seasonId +
    * that season's schedule[].race_week_num) — drives the weather-forecast section on the event

@@ -4,10 +4,12 @@ import {
   Entity,
   JoinColumn,
   ManyToOne,
+  OneToMany,
   PrimaryGeneratedColumn,
   type Relation,
   UpdateDateColumn,
 } from 'typeorm';
+import { EventTeamDummyDriver } from './event-team-dummy-driver.entity.js';
 import { EventTimeslot } from './event-timeslot.entity.js';
 import { Event } from './event.entity.js';
 
@@ -63,6 +65,11 @@ export class EventTeam {
   @Column({ name: 'pitstop_drivethrough_seconds', type: 'decimal', precision: 6, scale: 2, nullable: true })
   pitstopDrivethroughSeconds: string | null;
 
+  /** Tank size override in liters. Null = use the car's own tankCapacityLiters (the plan page
+   * falls back to it), so this only holds a value when an admin deliberately overrides it. */
+  @Column({ name: 'fuel_tank_capacity_liters', type: 'decimal', precision: 6, scale: 2, nullable: true })
+  fuelTankCapacityLiters: string | null;
+
   /** Team-wide baseline, used for planning math that can't yet know which driver will be in a
    * given stint (max-stint-by-fuel, "Generate Full Stint Plan"). See EventTeamDriverSettings for
    * the per-driver figures that override this once a stint is actually assigned to someone. */
@@ -91,6 +98,11 @@ export class EventTeam {
    * so the Strategy table's "Sim Time" column offsets from this rather than from startsAt. */
   @Column({ name: 'sim_start_time_of_day', type: 'varchar', nullable: true })
   simStartTimeOfDay: string | null;
+
+  /** Placeholder / roster-guest drivers on this crew — see EventTeamDummyDriver. Only loaded by
+   * EventTeamsService.listForEvent(). */
+  @OneToMany(() => EventTeamDummyDriver, (dummy) => dummy.eventTeam)
+  dummyDrivers?: Relation<EventTeamDummyDriver>[];
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

@@ -16,6 +16,7 @@ const DECIMAL_FIELD_KEYS = [
   'fuelUsagePerLapLiters',
   'raceStartOffsetMinutes',
   'formationLapFuelLiters',
+  'fuelTankCapacityLiters',
 ] as const;
 type DecimalFieldKey = (typeof DECIMAL_FIELD_KEYS)[number];
 
@@ -29,7 +30,11 @@ export class EventTeamsService {
   ) {}
 
   listForEvent(eventId: string): Promise<EventTeam[]> {
-    return this.teamsRepository.find({ where: { eventId }, order: { createdAt: 'ASC' } });
+    return this.teamsRepository.find({
+      where: { eventId },
+      relations: { dummyDrivers: true },
+      order: { createdAt: 'ASC' },
+    });
   }
 
   async create(eventId: string, dto: CreateEventTeamDto): Promise<EventTeam> {
