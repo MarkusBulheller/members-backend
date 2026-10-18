@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Not, Repository } from 'typeorm';
+import { In, IsNull, Not, Repository } from 'typeorm';
 import { CarsService } from '../cars/cars.service.js';
 import { DriversService } from '../drivers/drivers.service.js';
 import { IracingCarsService } from '../iracing/iracing-cars.service.js';
@@ -67,7 +67,8 @@ export class RaceResultsService {
    * `iracing_teams` cache. Stays null when the team has never been synced — the portal then just
    * omits the team from the subline. */
   private async withTeamName(result: RaceResult): Promise<RaceResultWithTeam> {
-    const team = await this.teamsRepository.findOne({ where: { teamId: result.teamId } });
+    // The synced team cache may hold iRacing's negative form of the id — match either sign.
+    const team = await this.teamsRepository.findOne({ where: { teamId: In([result.teamId, -result.teamId]) } });
     return Object.assign(result, { teamName: team?.teamName ?? null });
   }
 

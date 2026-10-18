@@ -1,5 +1,6 @@
 import { NotFoundException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
+import { In } from 'typeorm';
 import { RaceResultsService } from './race-results.service.js';
 
 /** Builds a RaceResultsService with just the repositories the single-result lookups touch;
@@ -32,7 +33,8 @@ describe('RaceResultsService team name resolution', () => {
 
     const result = await service.findByIdOrThrow('r1');
 
-    expect(teamsRepository.findOne).toHaveBeenCalledWith({ where: { teamId: 287336 } });
+    // Matches either sign: the synced team cache may hold iRacing's negative form of the id.
+    expect(teamsRepository.findOne).toHaveBeenCalledWith({ where: { teamId: In([287336, -287336]) } });
     expect(result.teamName).toBe('W2W Racing Red');
     expect(result.id).toBe('r1');
   });

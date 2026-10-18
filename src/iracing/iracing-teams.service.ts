@@ -30,9 +30,15 @@ export class IracingTeamsService {
     const results = await this.iracingService.exchangeCodeForTeamRosters(code, codeVerifier);
 
     for (const result of results) {
+      // Store the positive id (iRacing's membership data can hand back the negative form that team
+      // entries use in race results). Drop a legacy row stored under the negative form so the team
+      // doesn't appear twice.
+      const teamId = Math.abs(result.teamId);
+      await this.membersRepository.delete({ teamId: -teamId });
+      await this.teamsRepository.delete({ teamId: -teamId });
       await this.teamsRepository.upsert(
         {
-          teamId: result.teamId,
+          teamId,
           teamName: result.teamName,
           ownerCustId: result.ownerCustId,
           rosterCount: result.roster.length,
@@ -40,10 +46,10 @@ export class IracingTeamsService {
         ['teamId'],
       );
 
-      await this.membersRepository.delete({ teamId: result.teamId });
+      await this.membersRepository.delete({ teamId });
       if (result.roster.length > 0) {
         const rows = result.roster.map((member) =>
-          this.membersRepository.create({ teamId: result.teamId, custId: member.custId, displayName: member.displayName }),
+          this.membersRepository.create({ teamId, custId: member.custId, displayName: member.displayName }),
         );
         await this.membersRepository.save(rows);
       }
