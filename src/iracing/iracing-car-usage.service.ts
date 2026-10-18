@@ -1,6 +1,7 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { randomUUID } from 'node:crypto';
+import { In, QueryFailedError, Repository } from 'typeorm';
 import { IracingAdminTokenService } from './iracing-admin-token.service.js';
 import { IracingCarUsageScannedSubsession } from './iracing-car-usage-scanned-subsession.entity.js';
 import { IracingCarUsageStat } from './iracing-car-usage-stat.entity.js';
@@ -13,6 +14,17 @@ import { IracingService } from './iracing.service.js';
 // repeat without double-counting.
 const SCAN_LOOKBACK_MS = 2 * 60 * 60 * 1000;
 
+/** Postgres unique_violation. */
+const PG_UNIQUE_VIOLATION = '23505';
+/** Keeps the "already scanned?" IN (...) lookup well under Postgres' bind-parameter limit. */
+const SCANNED_LOOKUP_CHUNK = 1000;
+
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    error instanceof QueryFailedError && (error.driverError as { code?: string } | undefined)?.code === PG_UNIQUE_VIOLATION
+  );
+}
+
 /** Builds up a "most-used cars" tierlist per (series season, race week), one hourly scan at a
  * time — see IracingCarUsageSyncService for the cron that drives this. Kept separate from
  * IracingSeriesService (which owns the read-through catalog sync) since this is its own
@@ -20,6 +32,9 @@ const SCAN_LOOKBACK_MS = 2 * 60 * 60 * 1000;
 @Injectable()
 export class IracingCarUsageService {
   private readonly logger = new Logger(IracingCarUsageService.name);
+  /** True while a scan (the hourly cron or an admin's on-demand backfill) is running in this
+   * process; the scheduler would otherwise start the next hourly run on top of a slow one. */
+  private scanning = false;
 
   constructor(
     @InjectRepository(IracingSeriesSeason)
@@ -31,6 +46,19 @@ export class IracingCarUsageService {
     private readonly iracingService: IracingService,
     private readonly adminTokenService: IracingAdminTokenService,
   ) {}
+
+  /** Runs `task` unless another scan is already in progress, in which case it resolves to
+   * `{ ran: false }` without calling it. Shared by the hourly cron and scanSince so the two can't
+   * overlap (double-spending a single-use iRacing refresh token, hammering the Data API). */
+  async runExclusive<T>(task: () => Promise<T>): Promise<{ ran: true; value: T } | { ran: false }> {
+    if (this.scanning) return { ran: false };
+    this.scanning = true;
+    try {
+      return { ran: true, value: await task() };
+    } finally {
+      this.scanning = false;
+    }
+  }
 
   listTrackedSeasons(): Promise<IracingSeriesSeason[]> {
     return this.seasonsRepository.find({ where: { trackCarUsage: true }, order: { seriesName: 'ASC' } });
@@ -50,6 +78,28 @@ export class IracingCarUsageService {
       where: { seasonId, raceWeekNum },
       order: { entryCount: 'DESC', carName: 'ASC' },
     });
+  }
+
+  /** How many race entries the scans have tallied so far for one race week (the sum behind the
+   * tierlist's percentages) and how many distinct cars they spread over. Zeroes when nothing has
+   * been scanned yet. */
+  async getEntriesScanned(
+    seasonId: number,
+    raceWeekNum: number,
+  ): Promise<{ seasonId: number; raceWeekNum: number; entriesScanned: number; carCount: number }> {
+    const row = await this.statsRepository
+      .createQueryBuilder('s')
+      .select('COALESCE(SUM(s.entryCount), 0)', 'entries')
+      .addSelect('COUNT(*)', 'cars')
+      .where('s.seasonId = :seasonId', { seasonId })
+      .andWhere('s.raceWeekNum = :raceWeekNum', { raceWeekNum })
+      .getRawOne<{ entries: string; cars: string }>();
+    return {
+      seasonId,
+      raceWeekNum,
+      entriesScanned: Number(row?.entries ?? 0),
+      carCount: Number(row?.cars ?? 0),
+    };
   }
 
   /** One tracked season's worth of the hourly scan: find whichever race week is current right
@@ -90,6 +140,13 @@ export class IracingCarUsageService {
     if (Number.isNaN(since.getTime())) {
       throw new BadRequestException('Invalid "since" date');
     }
+    const outcome = await this.runExclusive(() => this.scanSinceUnguarded(seasonId, since, adminUserId));
+    if (!outcome.ran) {
+      throw new ConflictException('A car usage scan is already running, try again in a few minutes.');
+    }
+  }
+
+  private async scanSinceUnguarded(seasonId: number, since: Date, adminUserId: string): Promise<void> {
     const season = await this.seasonsRepository.findOne({ where: { seasonId } });
     if (!season) {
       throw new NotFoundException('Series season not found');
@@ -126,10 +183,12 @@ export class IracingCarUsageService {
     subsessionIds: number[],
     accessToken: string,
   ): Promise<number> {
+    // One lookup for the whole batch instead of a findOne per subsession.
+    const alreadyScanned = await this.loadScannedSubsessionIds(subsessionIds);
+
     let countedCount = 0;
     for (const subsessionId of subsessionIds) {
-      const alreadyScanned = await this.scannedRepository.findOne({ where: { subsessionId } });
-      if (alreadyScanned) continue;
+      if (alreadyScanned.has(subsessionId)) continue;
 
       try {
         const cars = await this.iracingService.fetchCarUsageForSubsession(accessToken, subsessionId);
@@ -138,35 +197,89 @@ export class IracingCarUsageService {
         // we've actually pulled cars from it, so the next scan (still within the lookback window)
         // retries it instead of permanently skipping a race we just caught mid-session.
         if (cars.length === 0) continue;
-        countedCount += 1;
-        for (const car of cars) {
-          await this.incrementCarUsage(seasonId, raceWeekNum, car.carId, car.carName, car.carClass);
+        if (await this.recordSubsession(seasonId, raceWeekNum, subsessionId, cars)) {
+          countedCount += 1;
         }
-        await this.scannedRepository.save(this.scannedRepository.create({ subsessionId }));
       } catch (error) {
         // One bad subsession shouldn't sink the whole scan — log and keep going. Deliberately
-        // NOT marked scanned, so a later scan covering this range retries it.
+        // NOT marked scanned (the transaction rolled back), so a later scan covering this range
+        // retries it.
         this.logger.warn(`Failed to fetch car usage for subsession ${subsessionId}: ${(error as Error).message}`);
       }
     }
     return countedCount;
   }
 
-  private async incrementCarUsage(
+  private async loadScannedSubsessionIds(subsessionIds: number[]): Promise<Set<number>> {
+    const scanned = new Set<number>();
+    for (let i = 0; i < subsessionIds.length; i += SCANNED_LOOKUP_CHUNK) {
+      const chunk = subsessionIds.slice(i, i + SCANNED_LOOKUP_CHUNK);
+      const rows = await this.scannedRepository.find({ where: { subsessionId: In(chunk) } });
+      for (const row of rows) scanned.add(row.subsessionId);
+    }
+    return scanned;
+  }
+
+  /** Marks the subsession scanned AND adds its cars to the tally in one transaction. The scanned
+   * row goes in first: its unique index arbitrates between two scans racing for the same
+   * subsession (the loser gets a unique violation, rolls back, and counts nothing), and the
+   * counter bump is a single atomic `entry_count = entry_count + n` upsert rather than a
+   * read-modify-write. Returns false when another scan already recorded it. */
+  private async recordSubsession(
     seasonId: number,
     raceWeekNum: number,
-    carId: number,
-    carName: string,
-    carClass: string,
-  ): Promise<void> {
-    let stat = await this.statsRepository.findOne({ where: { seasonId, raceWeekNum, carId } });
-    if (!stat) {
-      stat = this.statsRepository.create({ seasonId, raceWeekNum, carId, carName, carClass, entryCount: 0 });
+    subsessionId: number,
+    cars: { carId: number; carName: string; carClass: string }[],
+  ): Promise<boolean> {
+    // Several entries can share a car (and a multi-row upsert can't touch the same conflict
+    // target twice), so fold them into one row per car first.
+    const byCar = new Map<number, { carId: number; carName: string; carClass: string; count: number }>();
+    for (const car of cars) {
+      const existing = byCar.get(car.carId);
+      if (existing) {
+        existing.count += 1;
+        existing.carName = car.carName;
+        existing.carClass = car.carClass;
+      } else {
+        byCar.set(car.carId, { carId: car.carId, carName: car.carName, carClass: car.carClass, count: 1 });
+      }
     }
-    stat.carName = carName; // keep it fresh in case iRacing's own naming ever changes
-    stat.carClass = carClass;
-    stat.entryCount += 1;
-    await this.statsRepository.save(stat);
+    const rows = Array.from(byCar.values());
+    const placeholders = rows
+      .map((_, i) => {
+        const o = i * 7;
+        return `($${o + 1}, $${o + 2}, $${o + 3}, $${o + 4}, $${o + 5}, $${o + 6}, $${o + 7})`;
+      })
+      .join(', ');
+    const params = rows.flatMap((row) => [
+      randomUUID(),
+      seasonId,
+      raceWeekNum,
+      row.carId,
+      row.carName, // refreshed on conflict too, in case iRacing's own naming ever changes
+      row.carClass,
+      row.count,
+    ]);
+
+    try {
+      await this.statsRepository.manager.transaction(async (manager) => {
+        await manager.insert(IracingCarUsageScannedSubsession, { subsessionId });
+        await manager.query(
+          `INSERT INTO iracing_car_usage_stats (id, season_id, race_week_num, car_id, car_name, car_class, entry_count)
+           VALUES ${placeholders}
+           ON CONFLICT (season_id, race_week_num, car_id) DO UPDATE SET
+             car_name = EXCLUDED.car_name,
+             car_class = EXCLUDED.car_class,
+             entry_count = iracing_car_usage_stats.entry_count + EXCLUDED.entry_count,
+             updated_at = now()`,
+          params,
+        );
+      });
+      return true;
+    } catch (error) {
+      if (isUniqueViolation(error)) return false; // someone else counted this subsession first
+      throw error;
+    }
   }
 
   /** schedule is the raw per-race-week array from /series/season_schedule (see

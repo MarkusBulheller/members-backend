@@ -19,6 +19,12 @@ export class ContactInquiriesController {
     return this.contactInquiriesService.list();
   }
 
+  // Declared before ':id' routes so "unreviewed-count" is never captured as an inquiry id.
+  @Get('unreviewed-count')
+  unreviewedCount() {
+    return this.contactInquiriesService.countUnreviewed();
+  }
+
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateContactInquiryDto) {
     return this.contactInquiriesService.setReviewed(id, dto.reviewed);

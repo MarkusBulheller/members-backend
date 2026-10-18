@@ -1,4 +1,4 @@
-import { Column, CreateDateColumn, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn, type Relation } from 'typeorm';
+import { Column, CreateDateColumn, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn, type Relation } from 'typeorm';
 import { AchievementDefinition } from './achievement-definition.entity.js';
 
 /** One rung of an AchievementDefinition — e.g. "100 Laps" (threshold 100) under a LAPS-metric
@@ -12,6 +12,7 @@ export class AchievementTier {
   @JoinColumn({ name: 'definition_id' })
   definition: Relation<AchievementDefinition>;
 
+  @Index('idx_achievement_tiers_definition_id')
   @Column({ name: 'definition_id' })
   definitionId: string;
 

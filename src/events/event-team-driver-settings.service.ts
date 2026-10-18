@@ -1,10 +1,11 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { toDecimalString } from '../common/decimal.util.js';
 import { UpsertEventTeamDriverSettingsDto } from './dto/upsert-event-team-driver-settings.dto.js';
 import { EventTeamDriverSettings } from './event-team-driver-settings.entity.js';
 import { EventTeam } from './event-team.entity.js';
+import { TeamPlanEventsService } from './team-plan-events.service.js';
 
 @Injectable()
 export class EventTeamDriverSettingsService {
@@ -13,6 +14,7 @@ export class EventTeamDriverSettingsService {
     private readonly settingsRepository: Repository<EventTeamDriverSettings>,
     @InjectRepository(EventTeam)
     private readonly teamsRepository: Repository<EventTeam>,
+    @Optional() private readonly planEvents?: TeamPlanEventsService,
   ) {}
 
   async listForTeam(eventId: string, teamId: string): Promise<EventTeamDriverSettings[]> {
@@ -25,6 +27,7 @@ export class EventTeamDriverSettingsService {
     teamId: string,
     userId: string,
     dto: UpsertEventTeamDriverSettingsDto,
+    actorUserId?: string,
   ): Promise<EventTeamDriverSettings> {
     await this.findTeamOrThrow(eventId, teamId);
     let settings = await this.settingsRepository.findOne({ where: { eventTeamId: teamId, userId } });
@@ -36,7 +39,9 @@ export class EventTeamDriverSettingsService {
     if (dto.fuelUsagePerLapLiters !== undefined) {
       settings.fuelUsagePerLapLiters = toDecimalString(dto.fuelUsagePerLapLiters) ?? null;
     }
-    return this.settingsRepository.save(settings);
+    const saved = await this.settingsRepository.save(settings);
+    this.planEvents?.emit(eventId, teamId, 'drivers', actorUserId);
+    return saved;
   }
 
   private async findTeamOrThrow(eventId: string, teamId: string): Promise<EventTeam> {

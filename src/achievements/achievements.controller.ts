@@ -39,6 +39,13 @@ export class AchievementsController {
     return this.achievementsService.removeDefinition(id);
   }
 
+  @Post('definitions/recalculate-all')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  recalculateAll() {
+    return this.achievementsService.recalculateAll();
+  }
+
   @Post('definitions/:id/recalculate')
   @UseGuards(RolesGuard)
   @Roles(Role.ADMIN)

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
 import { Roles } from '../common/decorators/roles.decorator.js';
 import { Role } from '../common/enums/role.enum.js';
@@ -13,6 +13,7 @@ import { IracingDriverLookupService } from './iracing-driver-lookup.service.js';
 import { IracingSeriesService } from './iracing-series.service.js';
 import { IracingTeamsService } from './iracing-teams.service.js';
 import { IracingTracksService } from './iracing-tracks.service.js';
+import { IracingStatsSyncService } from './iracing-stats-sync.service.js';
 import { IracingService } from './iracing.service.js';
 
 @Controller('iracing')
@@ -27,12 +28,19 @@ export class IracingController {
     private readonly iracingDriverLookupService: IracingDriverLookupService,
     private readonly iracingTeamsService: IracingTeamsService,
     private readonly iracingCarUsageService: IracingCarUsageService,
+    private readonly iracingStatsSyncService: IracingStatsSyncService,
   ) {}
 
   @Post('link')
   async link(@Body() dto: OAuthCallbackDto, @CurrentUser() user: User) {
     const snapshot = await this.iracingService.exchangeCodeForLinkResult(dto.code, dto.codeVerifier);
     return this.driversService.applyIracingLink(user.id, snapshot);
+  }
+
+  /** "Re-sync now" on a driver profile — the driver themselves or an admin. */
+  @Post('drivers/:id/resync')
+  resyncDriver(@Param('id') id: string, @CurrentUser() user: User) {
+    return this.iracingStatsSyncService.resyncDriver(id, user);
   }
 
   @Get('cars')
@@ -68,6 +76,12 @@ export class IracingController {
     return this.iracingSeriesService.list();
   }
 
+  /** One season with its full schedule (the list omits it). `sync` is POST-only, so no route clash. */
+  @Get('series/:seasonId')
+  getSeries(@Param('seasonId', ParseIntPipe) seasonId: number) {
+    return this.iracingSeriesService.getById(seasonId);
+  }
+
   @Post('series/sync')
   @UseGuards(RolesGuard)
   @Roles(Role.ADMIN)
@@ -90,6 +104,11 @@ export class IracingController {
   @Get('series/:seasonId/car-usage/:raceWeekNum')
   getCarUsage(@Param('seasonId') seasonId: string, @Param('raceWeekNum') raceWeekNum: string) {
     return this.iracingCarUsageService.getTierlist(Number(seasonId), Number(raceWeekNum));
+  }
+
+  @Get('series/:seasonId/car-usage/:raceWeekNum/summary')
+  getCarUsageSummary(@Param('seasonId') seasonId: string, @Param('raceWeekNum') raceWeekNum: string) {
+    return this.iracingCarUsageService.getEntriesScanned(Number(seasonId), Number(raceWeekNum));
   }
 
   @Post('series/:seasonId/car-usage/sync-since')

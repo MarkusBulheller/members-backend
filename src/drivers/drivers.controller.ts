@@ -36,8 +36,8 @@ export class DriversController {
   }
 
   @Get('me')
-  findOwnProfile(@CurrentUser() user: User) {
-    return this.driversService.findByUserIdOrThrow(user.id);
+  async findOwnProfile(@CurrentUser() user: User) {
+    return this.driversService.withDiscordUsernameFor(await this.driversService.findByUserIdOrThrow(user.id), user);
   }
 
   @Patch('me')
@@ -54,6 +54,11 @@ export class DriversController {
     return this.driversService.setOwnAvatar(user.id, file);
   }
 
+  @Post('me/avatar/discord')
+  useDiscordAvatar(@CurrentUser() user: User) {
+    return this.driversService.setOwnAvatarFromDiscord(user.id);
+  }
+
   @Delete('me/avatar')
   removeOwnAvatar(@CurrentUser() user: User) {
     return this.driversService.removeOwnAvatar(user.id);
@@ -67,8 +72,8 @@ export class DriversController {
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.driversService.findByIdOrThrow(id);
+  async findOne(@Param('id') id: string, @CurrentUser() user: User) {
+    return this.driversService.withDiscordUsernameFor(await this.driversService.findByIdOrThrow(id), user);
   }
 
   @Patch(':id')

@@ -18,6 +18,15 @@ export class IracingCarUsageSyncService {
 
   @Cron('0 * * * *')
   async scanAll(): Promise<void> {
+    // The scheduler does not skip a tick while the previous run is still going; a slow Data API
+    // can push a run past the hour, so skip instead of piling a second scan on top.
+    const outcome = await this.carUsageService.runExclusive(() => this.scanTrackedSeasons());
+    if (!outcome.ran) {
+      this.logger.warn('Previous car usage scan is still running, skipping this run');
+    }
+  }
+
+  private async scanTrackedSeasons(): Promise<void> {
     const seasons = await this.carUsageService.listTrackedSeasons();
     if (seasons.length === 0) return;
 

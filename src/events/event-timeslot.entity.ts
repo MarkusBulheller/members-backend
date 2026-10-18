@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn, type Relation } from 'typeorm';
+import { Column, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn, type Relation } from 'typeorm';
 import { Event } from './event.entity.js';
 
 /** One candidate start time for an event — endurance events commonly offer a few options (e.g.
@@ -16,6 +16,7 @@ export class EventTimeslot {
   @JoinColumn({ name: 'event_id' })
   event: Relation<Event>;
 
+  @Index('idx_event_timeslots_event_id')
   @Column({ name: 'event_id' })
   eventId: string;
 

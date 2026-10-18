@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   OneToMany,
@@ -50,6 +51,7 @@ export class RaceResult {
   @JoinColumn({ name: 'car_id' })
   car: Relation<Car> | null;
 
+  @Index('idx_race_results_car_id')
   @Column({ name: 'car_id', type: 'uuid', nullable: true })
   carId: string | null;
 
@@ -57,9 +59,11 @@ export class RaceResult {
   @JoinColumn({ name: 'track_id' })
   track: Relation<Track> | null;
 
+  @Index('idx_race_results_track_id')
   @Column({ name: 'track_id', type: 'uuid', nullable: true })
   trackId: string | null;
 
+  @Index('idx_race_results_start_time')
   @Column({ name: 'start_time', type: 'timestamptz', nullable: true })
   startTime: Date | null;
 

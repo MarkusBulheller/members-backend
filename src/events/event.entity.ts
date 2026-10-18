@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   OneToMany,
@@ -40,6 +41,7 @@ export class Event {
   @Column({ name: 'car_classes', type: 'text', array: true })
   carClasses: string[];
 
+  @Index('idx_events_starts_at')
   @Column({ name: 'starts_at', type: 'timestamptz' })
   startsAt: Date;
 
@@ -74,6 +76,22 @@ export class Event {
    * convention as the other decimals. Applied on the plan page on top of the team's tank size. */
   @Column({ name: 'fuel_limit_percent', type: 'decimal', precision: 5, scale: 2, nullable: true })
   fuelLimitPercent: string | null;
+
+  /** Le Mans Ultimate only: how many individual tyres (not sets) each car may use over the whole
+   * race, including the 4 it starts on. Null = no limit. Compared against the team plan's
+   * EventTeamStint.tyresChanged on the plan page. */
+  @Column({ name: 'tyre_limit', type: 'int', nullable: true })
+  tyreLimit: number | null;
+
+  /** The Discord message announcing this event (and where it was posted), so the signup list in
+   * it can be edited in place as people sign up or out. Null until announced, or if the message
+   * was deleted in Discord. The channel is stored too since the configured events channel can
+   * change later while an old post still lives in the previous one. */
+  @Column({ name: 'discord_message_id', type: 'varchar', nullable: true })
+  discordMessageId: string | null;
+
+  @Column({ name: 'discord_channel_id', type: 'varchar', nullable: true })
+  discordChannelId: string | null;
 
   /** Links this event to a specific iRacing series-season week (IracingSeriesSeason.seasonId +
    * that season's schedule[].race_week_num) — drives the weather-forecast section on the event

@@ -9,6 +9,10 @@ export interface IracingSeriesSeasonWithLogo extends IracingSeriesSeason {
   logoUrl: string | null;
 }
 
+/** A season as returned by the list endpoint: everything except the heavy raw `schedule` array
+ * (per-race-week track + weather blobs) — GET /iracing/series/:seasonId returns one with it. */
+export type IracingSeriesSeasonSummary = Omit<IracingSeriesSeason, 'schedule'> & { logoUrl: string | null };
+
 /** Same labels/field names as the frontend's lib/iracingWeather.ts summarizeRaceWeek() —
  * duplicated here (no shared package between the two projects) since this is the one place the
  * backend needs to render a one-line forecast itself, for Discord announcements. */
@@ -25,16 +29,41 @@ export class IracingSeriesService {
     private readonly configService: ConfigService,
   ) {}
 
-  async list(): Promise<IracingSeriesSeasonWithLogo[]> {
-    const seasons = await this.seriesRepository.find({ order: { category: 'ASC', seriesName: 'ASC' } });
+  /** Light list: every column except `schedule`, by far the largest part of a season row. */
+  async list(): Promise<IracingSeriesSeasonSummary[]> {
+    const seasons = await this.seriesRepository.find({
+      select: {
+        seasonId: true,
+        seriesId: true,
+        seriesName: true,
+        seasonName: true,
+        category: true,
+        licenseGroup: true,
+        official: true,
+        active: true,
+        logo: true,
+        syncedAt: true,
+        trackCarUsage: true,
+      },
+      order: { category: 'ASC', seriesName: 'ASC' },
+    });
     return seasons.map((season) => this.withResolvedLogo(season));
+  }
+
+  /** One season including its full `schedule` (which the list omits). */
+  async getById(seasonId: number): Promise<IracingSeriesSeasonWithLogo> {
+    const season = await this.seriesRepository.findOne({ where: { seasonId } });
+    if (!season) {
+      throw new NotFoundException('Series season not found');
+    }
+    return this.withResolvedLogo(season);
   }
 
   /** iRacing's /series/assets gives a bare filename (e.g. "seriesid_374.png") with no `folder`
    * field to join, unlike car/track assets — the endpoint's own "relative to the CDN base" note
    * undersells it: confirmed live that the real path is CDN base + img/logos/series/<filename>,
    * not the CDN base alone. */
-  private withResolvedLogo(season: IracingSeriesSeason): IracingSeriesSeasonWithLogo {
+  private withResolvedLogo<T extends Pick<IracingSeriesSeason, 'logo'>>(season: T): T & { logoUrl: string | null } {
     const base = this.configService.get<string>('IRACING_IMAGE_BASE_URL', 'https://images-static.iracing.com');
     const logoUrl = season.logo ? `${base}/img/logos/series/${season.logo.replace(/^\/+/, '')}` : null;
     return { ...season, logoUrl };

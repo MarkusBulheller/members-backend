@@ -29,6 +29,7 @@ export class EventSignup {
   eventId: string;
 
   /** Plain column, not a relation to User — keeps Events decoupled from the Users module. */
+  @Index('idx_event_signups_user_id')
   @Column({ name: 'user_id' })
   userId: string;
 
@@ -78,6 +79,7 @@ export class EventSignup {
   @JoinColumn({ name: 'event_team_id' })
   eventTeam: Relation<EventTeam> | null;
 
+  @Index('idx_event_signups_event_team_id')
   @Column({ name: 'event_team_id', type: 'uuid', nullable: true })
   eventTeamId: string | null;
 

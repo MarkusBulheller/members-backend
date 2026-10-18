@@ -31,6 +31,7 @@ export class AchievementAward {
   @JoinColumn({ name: 'tier_id' })
   tier: Relation<AchievementTier>;
 
+  @Index('idx_achievement_awards_tier_id')
   @Column({ name: 'tier_id' })
   tierId: string;
 

@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -31,6 +32,7 @@ export class CarTrackSetup {
   @JoinColumn({ name: 'track_id' })
   track: Relation<Track>;
 
+  @Index('idx_car_track_setups_track_id')
   @Column({ name: 'track_id' })
   trackId: string;
 

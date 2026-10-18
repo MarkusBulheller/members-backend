@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -23,6 +24,7 @@ export class RaceResultDriverStint {
   @JoinColumn({ name: 'race_result_id' })
   raceResult: Relation<RaceResult>;
 
+  @Index('idx_race_result_driver_stints_race_result_id')
   @Column({ name: 'race_result_id' })
   raceResultId: string;
 
@@ -30,6 +32,7 @@ export class RaceResultDriverStint {
   @JoinColumn({ name: 'driver_profile_id' })
   driverProfile: Relation<DriverProfile> | null;
 
+  @Index('idx_race_result_driver_stints_driver_profile_id')
   @Column({ name: 'driver_profile_id', type: 'uuid', nullable: true })
   driverProfileId: string | null;
 

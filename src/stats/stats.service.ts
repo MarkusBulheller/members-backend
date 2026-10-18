@@ -63,6 +63,16 @@ export interface PublicSummaryStats {
 const MIN_LAPS_FOR_INCIDENT_RATE = 20;
 const LEADERBOARD_SIZE = 10;
 
+/** Short in-memory caches: the public summary is hit by every anonymous visit to the marketing
+ * site, the dashboard on every mount and filter change. Both only change when a race result is
+ * imported/deleted, so a brief TTL is plenty (and keeps this service independent of the
+ * race-results module). */
+export const PUBLIC_SUMMARY_TTL_MS = 60_000;
+export const DASHBOARD_TTL_MS = 30_000;
+/** Filter values come from query strings, so the dashboard cache key space is user-controlled —
+ * bound it. */
+const DASHBOARD_CACHE_MAX_ENTRIES = 100;
+
 // Mirrors members-portal/src/lib/lapTime.ts's guessRaceLength() — kept as a small duplicated
 // pure function rather than a shared package, since these are two separate npm projects.
 const STANDARD_RACE_LENGTHS_MIN = [160, 180, 240, 360, 480, 600, 720, 1440];
@@ -95,38 +105,121 @@ function trackDisplayName(result: RaceResult): string {
 
 @Injectable()
 export class StatsService {
+  private publicSummaryCache: { value: PublicSummaryStats; at: number } | null = null;
+  private publicSummaryInFlight: Promise<PublicSummaryStats> | null = null;
+  private readonly dashboardCache = new Map<string, { value: DashboardStats; at: number }>();
+  private readonly dashboardInFlight = new Map<string, Promise<DashboardStats>>();
+
   constructor(
     @InjectRepository(RaceResult)
     private readonly raceResultsRepository: Repository<RaceResult>,
   ) {}
 
   /** Real, team-wide totals for the public marketing site — every imported result counts once,
-   * regardless of who drove. Position/class-position already fall back the same way
-   * resultPosition() does everywhere else in this file. */
+   * regardless of who drove. Position/class-position fall back the same way resultPosition()
+   * does everywhere else in this file. Aggregated in SQL (no row loading) and cached for
+   * PUBLIC_SUMMARY_TTL_MS, since this endpoint is unauthenticated. */
   async getPublicSummary(): Promise<PublicSummaryStats> {
-    const results = await this.raceResultsRepository.find();
-    let raceWins = 0;
-    let podiumFinishes = 0;
-    let hoursRacedMs = 0;
-    for (const result of results) {
-      const position = resultPosition(result);
-      if (position === 1) raceWins += 1;
-      if (position !== null && position <= 3) podiumFinishes += 1;
-      if (result.startTime && result.endTime) {
-        const ms = result.endTime.getTime() - result.startTime.getTime();
-        if (ms > 0) hoursRacedMs += ms;
-      }
+    const now = Date.now();
+    if (this.publicSummaryCache && now - this.publicSummaryCache.at < PUBLIC_SUMMARY_TTL_MS) {
+      return this.publicSummaryCache.value;
     }
+    // Concurrent misses share one query instead of stampeding the database.
+    this.publicSummaryInFlight ??= this.computePublicSummary()
+      .then((value) => {
+        this.publicSummaryCache = { value, at: Date.now() };
+        return value;
+      })
+      .finally(() => {
+        this.publicSummaryInFlight = null;
+      });
+    return this.publicSummaryInFlight;
+  }
+
+  private async computePublicSummary(): Promise<PublicSummaryStats> {
+    const position = 'COALESCE("r"."finishing_position_in_class", "r"."finishing_position")';
+    const row = await this.raceResultsRepository
+      .createQueryBuilder('r')
+      .select('COUNT(*)', 'races')
+      .addSelect(`COUNT(*) FILTER (WHERE ${position} = 1)`, 'wins')
+      .addSelect(`COUNT(*) FILTER (WHERE ${position} <= 3)`, 'podiums')
+      .addSelect(
+        `COALESCE(SUM(EXTRACT(EPOCH FROM ("r"."end_time" - "r"."start_time"))) FILTER (WHERE "r"."end_time" > "r"."start_time"), 0)`,
+        'seconds',
+      )
+      .getRawOne<{ races: string; wins: string; podiums: string; seconds: string }>();
     return {
-      raceWins,
-      podiumFinishes,
-      hoursRaced: Math.round(hoursRacedMs / 3_600_000),
-      racesEntered: results.length,
+      raceWins: Number(row?.wins ?? 0),
+      podiumFinishes: Number(row?.podiums ?? 0),
+      hoursRaced: Math.round((Number(row?.seconds ?? 0) * 1000) / 3_600_000),
+      racesEntered: Number(row?.races ?? 0),
     };
   }
 
+  /** Per-filter-combination cache (DASHBOARD_TTL_MS) in front of the aggregation below. */
   async getDashboard(filters: DashboardFilters): Promise<DashboardStats> {
-    const allResults = await this.raceResultsRepository.find({ relations: { driverStints: true } });
+    const key = JSON.stringify([filters.year, filters.trackId, filters.carId, filters.series, filters.raceLength]);
+    const now = Date.now();
+    const cached = this.dashboardCache.get(key);
+    if (cached && now - cached.at < DASHBOARD_TTL_MS) return cached.value;
+
+    let pending = this.dashboardInFlight.get(key);
+    if (!pending) {
+      pending = this.computeDashboard(filters)
+        .then((value) => {
+          this.rememberDashboard(key, value);
+          return value;
+        })
+        .finally(() => {
+          this.dashboardInFlight.delete(key);
+        });
+      this.dashboardInFlight.set(key, pending);
+    }
+    return pending;
+  }
+
+  private rememberDashboard(key: string, value: DashboardStats): void {
+    const now = Date.now();
+    if (this.dashboardCache.size >= DASHBOARD_CACHE_MAX_ENTRIES) {
+      for (const [existingKey, entry] of this.dashboardCache) {
+        if (now - entry.at >= DASHBOARD_TTL_MS) this.dashboardCache.delete(existingKey);
+      }
+      if (this.dashboardCache.size >= DASHBOARD_CACHE_MAX_ENTRIES) {
+        // Still full of live entries: drop the oldest (Map iterates in insertion order).
+        const oldest = this.dashboardCache.keys().next();
+        if (!oldest.done) this.dashboardCache.delete(oldest.value);
+      }
+    }
+    this.dashboardCache.delete(key);
+    this.dashboardCache.set(key, { value, at: now });
+  }
+
+  private async computeDashboard(filters: DashboardFilters): Promise<DashboardStats> {
+    // Only the columns the aggregation reads (no share tokens, positions-in-class details, laps, etc.).
+    const allResults = await this.raceResultsRepository.find({
+      select: {
+        id: true,
+        trackId: true,
+        trackName: true,
+        trackConfig: true,
+        carId: true,
+        carName: true,
+        seriesName: true,
+        startTime: true,
+        endTime: true,
+        finishingPosition: true,
+        finishingPositionInClass: true,
+        driverStints: {
+          id: true,
+          iracingCustId: true,
+          driverProfileId: true,
+          displayName: true,
+          lapsComplete: true,
+          incidents: true,
+        },
+      },
+      relations: { driverStints: true },
+    });
 
     const filtered = allResults.filter((result) => {
       if (filters.year !== null && result.startTime?.getFullYear() !== filters.year) return false;

@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   OneToMany,
@@ -24,6 +25,7 @@ export class EventTeam {
   @JoinColumn({ name: 'event_id' })
   event: Relation<Event>;
 
+  @Index('idx_event_teams_event_id')
   @Column({ name: 'event_id' })
   eventId: string;
 
@@ -61,6 +63,11 @@ export class EventTeam {
 
   @Column({ name: 'tyre_change_duration_seconds', type: 'decimal', precision: 6, scale: 2, nullable: true })
   tyreChangeDurationSeconds: string | null;
+
+  /** LMU only: seconds for a pit stop that changes just 1-2 tyres (3-4 tyres use
+   * tyreChangeDurationSeconds). Null = fall back to PARTIAL_TYRE_CHANGE_SECONDS_DEFAULT (5). */
+  @Column({ name: 'partial_tyre_change_seconds', type: 'decimal', precision: 6, scale: 2, nullable: true })
+  partialTyreChangeSeconds: string | null;
 
   @Column({ name: 'pitstop_drivethrough_seconds', type: 'decimal', precision: 6, scale: 2, nullable: true })
   pitstopDrivethroughSeconds: string | null;

@@ -14,8 +14,22 @@ import { UpdateAchievementDefinitionDto } from './dto/update-achievement-definit
 
 const DEFINITION_RELATIONS = { tiers: true } as const;
 
+export type AchievementDefinitionWithHolders = AchievementDefinition & { holderCount: number };
+
+export interface RecalculateAllResult {
+  /** How many non-MANUAL definitions were recalculated successfully. */
+  definitionsProcessed: number;
+  /** Total new tier awards created across all definitions. */
+  newAwards: number;
+  results: Array<{ id: string; name: string; newAwards: number }>;
+  failures: Array<{ id: string; name: string; message: string }>;
+}
+
 @Injectable()
 export class AchievementsService {
+  /** Guards recalculateAll() against overlapping runs (single backend process). */
+  private recalculatingAll = false;
+
   constructor(
     @InjectRepository(AchievementDefinition)
     private readonly definitionsRepository: Repository<AchievementDefinition>,
@@ -29,8 +43,25 @@ export class AchievementsService {
     private readonly stintsRepository: Repository<RaceResultDriverStint>,
   ) {}
 
-  listDefinitions(): Promise<AchievementDefinition[]> {
-    return this.definitionsRepository.find({ relations: DEFINITION_RELATIONS, order: { name: 'ASC' } });
+  /** Definitions with their tiers, plus (additively) `holderCount` — how many distinct drivers
+   * hold at least one tier of each, from a single grouped query over the awards. */
+  async listDefinitions(): Promise<AchievementDefinitionWithHolders[]> {
+    const definitions = await this.definitionsRepository.find({ relations: DEFINITION_RELATIONS, order: { name: 'ASC' } });
+    const holderCounts = await this.countHoldersByDefinition();
+    return definitions.map((definition) =>
+      Object.assign(definition, { holderCount: holderCounts.get(definition.id) ?? 0 }),
+    );
+  }
+
+  private async countHoldersByDefinition(): Promise<Map<string, number>> {
+    const rows = await this.awardsRepository
+      .createQueryBuilder('award')
+      .innerJoin('award.tier', 'tier')
+      .select('tier.definitionId', 'definitionId')
+      .addSelect('COUNT(DISTINCT award.driverProfileId)', 'holders')
+      .groupBy('tier.definitionId')
+      .getRawMany<{ definitionId: string; holders: string }>();
+    return new Map(rows.map((row) => [row.definitionId, Number(row.holders)]));
   }
 
   async createDefinition(dto: CreateAchievementDefinitionDto): Promise<AchievementDefinition> {
@@ -174,6 +205,42 @@ export class AchievementsService {
       await this.awardsRepository.save(toCreate);
     }
     return { newAwards: toCreate.length };
+  }
+
+  /** Runs recalculate() for every non-MANUAL definition, strictly one after another (each pass
+   * loads every stint, so running them in parallel would multiply memory use). A failure in one
+   * definition is recorded and doesn't stop the rest. Only one run may be in flight at a time —
+   * a second request while one is running is rejected rather than queued. */
+  async recalculateAll(): Promise<RecalculateAllResult> {
+    if (this.recalculatingAll) {
+      throw new ConflictException('A recalculation is already running — wait for it to finish.');
+    }
+    this.recalculatingAll = true;
+    try {
+      const definitions = (await this.definitionsRepository.find({ order: { name: 'ASC' } })).filter(
+        (definition) => definition.metric !== AchievementMetric.MANUAL,
+      );
+
+      const results: RecalculateAllResult['results'] = [];
+      const failures: RecalculateAllResult['failures'] = [];
+      let newAwards = 0;
+      for (const definition of definitions) {
+        try {
+          const result = await this.recalculate(definition.id);
+          newAwards += result.newAwards;
+          results.push({ id: definition.id, name: definition.name, newAwards: result.newAwards });
+        } catch (error) {
+          failures.push({
+            id: definition.id,
+            name: definition.name,
+            message: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+      }
+      return { definitionsProcessed: results.length, newAwards, results, failures };
+    } finally {
+      this.recalculatingAll = false;
+    }
   }
 
   /** Loaded in-memory and reduced with plain JS (matching StatsService's existing style rather

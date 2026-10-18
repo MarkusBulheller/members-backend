@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn, type Relation } from 'typeorm';
+import { Column, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn, type Relation } from 'typeorm';
 import { DriverProfile } from '../drivers/driver-profile.entity.js';
 import { RaceResult } from './race-result.entity.js';
 
@@ -17,6 +17,7 @@ export class RaceResultLap {
   @JoinColumn({ name: 'race_result_id' })
   raceResult: Relation<RaceResult>;
 
+  @Index('idx_race_result_laps_race_result_id')
   @Column({ name: 'race_result_id' })
   raceResultId: string;
 
@@ -24,6 +25,7 @@ export class RaceResultLap {
   @JoinColumn({ name: 'driver_profile_id' })
   driverProfile: Relation<DriverProfile> | null;
 
+  @Index('idx_race_result_laps_driver_profile_id')
   @Column({ name: 'driver_profile_id', type: 'uuid', nullable: true })
   driverProfileId: string | null;
 

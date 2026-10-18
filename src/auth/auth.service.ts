@@ -21,6 +21,19 @@ export class AuthService {
     return `${this.sessionCookieName}_oauth_state`;
   }
 
+  /** Optional public Discord invite link (DISCORD_INVITE_URL), shown to people waiting for
+   * approval so they can ask an admin. Only http(s) URLs are accepted; null when unset/invalid. */
+  get discordInviteUrl(): string | null {
+    const raw = this.configService.get<string>('DISCORD_INVITE_URL')?.trim();
+    if (!raw) return null;
+    try {
+      const url = new URL(raw);
+      return url.protocol === 'https:' || url.protocol === 'http:' ? url.toString() : null;
+    } catch {
+      return null;
+    }
+  }
+
   generateOAuthState(): string {
     return randomBytes(24).toString('hex');
   }

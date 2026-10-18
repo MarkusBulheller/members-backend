@@ -28,6 +28,11 @@ export class ContactInquiriesService {
     return this.inquiriesRepository.find({ order: { reviewed: 'ASC', createdAt: 'DESC' } });
   }
 
+  /** Cheap count for the admin nav badge — no rows are loaded. */
+  async countUnreviewed(): Promise<{ count: number }> {
+    return { count: await this.inquiriesRepository.count({ where: { reviewed: false } }) };
+  }
+
   async setReviewed(id: string, reviewed: boolean): Promise<ContactInquiry> {
     const inquiry = await this.inquiriesRepository.findOne({ where: { id } });
     if (!inquiry) {

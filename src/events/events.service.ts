@@ -1,23 +1,45 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  type OnModuleDestroy,
+  Optional,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Not, Repository } from 'typeorm';
 import { toDecimalString } from '../common/decimal.util.js';
 import { EventStatus } from '../common/enums/event-status.enum.js';
 import { SignupStatus } from '../common/enums/signup-status.enum.js';
+import type { Sim } from '../common/enums/sim.enum.js';
 import { UserStatus } from '../common/enums/user-status.enum.js';
-import { DiscordBotService } from '../discord-bot/discord-bot.service.js';
+import { type AnnouncementSignup, DiscordBotService } from '../discord-bot/discord-bot.service.js';
+import { DriverProfile } from '../drivers/driver-profile.entity.js';
 import { User } from '../users/user.entity.js';
 import { AdminAddSignupDto } from './dto/admin-add-signup.dto.js';
 import { CreateEventDto } from './dto/create-event.dto.js';
 import { SignupDto } from './dto/signup.dto.js';
 import { UpdateEventDto } from './dto/update-event.dto.js';
 import { EventSignup } from './event-signup.entity.js';
+import {
+  computeViewerStatus,
+  type EventViewerStatus,
+  type ViewerSignupLike,
+  withViewerStatus,
+} from './event-viewer-status.js';
 import { EventTeam } from './event-team.entity.js';
 import { EventTeamStint } from './event-team-stint.entity.js';
 import { EventTimeslot } from './event-timeslot.entity.js';
 import { Event } from './event.entity.js';
+import { ALL_TEAMS, TeamPlanEventsService } from './team-plan-events.service.js';
+import { tyreStopSeconds } from './tyre-change.util.js';
 
 const EVENT_RELATIONS = { track: true, timeslots: true } as const;
+
+/** Signups often arrive in bursts (an admin toggling hours, several people signing up at once) —
+ * wait for things to settle before editing the Discord post, rather than editing it per change. */
+const ANNOUNCEMENT_REFRESH_DEBOUNCE_MS = 3000;
 
 /** Only what the anonymous public marketing site's "Race Schedule" needs — no signups, no
  * driver-facing detail, just enough to list what's coming up. See PublicEventsController. */
@@ -66,14 +88,15 @@ function computeNextStintStart(
   userId: string,
   timeslotStartsAtMs: number,
   now: number,
+  sim?: Sim,
 ): Date | null {
   const refuelMinutes = (parseDecimal(team.refuelDurationSeconds) ?? 0) / 60;
-  const tyreMinutes = (parseDecimal(team.tyreChangeDurationSeconds) ?? 0) / 60;
   const driveMinutes = (parseDecimal(team.pitstopDrivethroughSeconds) ?? 0) / 60;
 
   let cursorMs = timeslotStartsAtMs;
   for (const [index, stint] of stints.entries()) {
-    const pitBeforeMinutes = index === 0 ? 0 : refuelMinutes + driveMinutes + (stint.tyreChange ? tyreMinutes : 0);
+    const pitBeforeMinutes =
+      index === 0 ? 0 : refuelMinutes + driveMinutes + tyreStopSeconds(stint, team, sim) / 60;
     const theoreticalStartMs = cursorMs + pitBeforeMinutes * 60_000;
     const actualStartMs = stint.actualStartAt ? stint.actualStartAt.getTime() : null;
     const startMs = actualStartMs ?? theoreticalStartMs;
@@ -89,7 +112,10 @@ function computeNextStintStart(
 }
 
 @Injectable()
-export class EventsService {
+export class EventsService implements OnModuleDestroy {
+  private readonly logger = new Logger(EventsService.name);
+  private readonly announcementTimers = new Map<string, NodeJS.Timeout>();
+
   constructor(
     @InjectRepository(Event)
     private readonly eventsRepository: Repository<Event>,
@@ -103,7 +129,10 @@ export class EventsService {
     private readonly eventTeamStintsRepository: Repository<EventTeamStint>,
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
+    @InjectRepository(DriverProfile)
+    private readonly driverProfilesRepository: Repository<DriverProfile>,
     private readonly discordBotService: DiscordBotService,
+    @Optional() private readonly planEvents?: TeamPlanEventsService,
   ) {}
 
   /** Every team this driver has at least one stint in, for an event that's live or still to come
@@ -148,7 +177,7 @@ export class EventsService {
           where: { eventTeamId: team.id },
           order: { order: 'ASC' },
         });
-        nextStintStartsAt = computeNextStintStart(team, teamStints, userId, timeslotStartsAt.getTime(), now);
+        nextStintStartsAt = computeNextStintStart(team, teamStints, userId, timeslotStartsAt.getTime(), now, event.sim);
       }
 
       assignments.push({
@@ -174,10 +203,11 @@ export class EventsService {
   }
 
   async create(dto: CreateEventDto, createdByUserId: string): Promise<Event> {
-    const { timeslots, fuelLimitPercent, ...eventData } = dto;
+    const { timeslots, fuelLimitPercent, tyreLimit, ...eventData } = dto;
     const event = this.eventsRepository.create({
       ...eventData,
       fuelLimitPercent: toDecimalString(fuelLimitPercent) ?? null,
+      tyreLimit: tyreLimit ?? null,
       createdByUserId,
     });
     const saved = await this.eventsRepository.save(event);
@@ -189,17 +219,18 @@ export class EventsService {
 
     const result = await this.findRawByIdOrThrow(saved.id);
     if (result.status === EventStatus.PUBLISHED) {
-      void this.discordBotService.postEventAnnouncement(result);
+      void this.announceEvent(result);
     }
     return result;
   }
 
-  async update(id: string, dto: UpdateEventDto): Promise<Event> {
+  async update(id: string, dto: UpdateEventDto, actorUserId?: string): Promise<Event> {
     const event = await this.findRawByIdOrThrow(id);
     const wasPublished = event.status === EventStatus.PUBLISHED;
-    const { timeslots, fuelLimitPercent, ...eventData } = dto;
+    const { timeslots, fuelLimitPercent, tyreLimit, ...eventData } = dto;
     Object.assign(event, eventData);
     if (fuelLimitPercent !== undefined) event.fuelLimitPercent = toDecimalString(fuelLimitPercent) ?? null;
+    if (tyreLimit !== undefined) event.tyreLimit = tyreLimit;
     await this.eventsRepository.save(event);
 
     if (timeslots) {
@@ -207,10 +238,12 @@ export class EventsService {
     }
 
     const result = await this.findRawByIdOrThrow(id);
+    // Fuel/tyre limits, status and timeslots feed every team's plan page.
+    this.planEvents?.emit(id, ALL_TEAMS, 'event', actorUserId);
     // Only the DRAFT/CANCELLED → PUBLISHED transition announces — re-saving an already-published
     // event (e.g. tweaking its description) must not re-post.
     if (!wasPublished && result.status === EventStatus.PUBLISHED) {
-      void this.discordBotService.postEventAnnouncement(result);
+      void this.announceEvent(result);
     }
     return result;
   }
@@ -258,17 +291,19 @@ export class EventsService {
    * the implied end (startsAt + raceLengthMinutes) — a currently-running multi-hour race must
    * keep showing, so this can't just check startsAt like the old PUBLISHED-only version did. */
   async findPublicUpcoming(limit: number): Promise<PublicUpcomingEvent[]> {
-    const events = await this.eventsRepository.find({
-      relations: { track: true },
-      order: { startsAt: 'ASC' },
-    });
-    const now = Date.now();
-    return events
-      .filter((event) => {
-        const endMs = event.endsAt ? event.endsAt.getTime() : event.startsAt.getTime() + event.raceLengthMinutes * 60_000;
-        return endMs >= now;
+    if (limit <= 0) return [];
+    // Filtered and limited in the DB (the events table keeps all history) — same "not finished yet"
+    // rule as described above, evaluated in SQL.
+    const events = await this.eventsRepository
+      .createQueryBuilder('event')
+      .leftJoinAndSelect('event.track', 'track')
+      .where(`COALESCE("event"."ends_at", "event"."starts_at" + "event"."race_length_minutes" * interval '1 minute') >= :now`, {
+        now: new Date(),
       })
-      .slice(0, limit)
+      .orderBy('event.startsAt', 'ASC')
+      .take(limit)
+      .getMany();
+    return events
       .map((event) => ({
         id: event.id,
         title: event.title,
@@ -281,15 +316,29 @@ export class EventsService {
   // Same DRAFT-only restriction as findByIdForViewer — a member's own events list must include
   // everything they might want to check on (SIGNUPS_CLOSED while stints are being planned,
   // COMPLETED for history), or the list and the detail page disagree about what's visible.
-  findAllForViewer(isAdmin: boolean): Promise<Event[]> {
-    return this.eventsRepository.find({
+  async findAllForViewer(isAdmin: boolean, viewerUserId?: string): Promise<(Event & { viewer: EventViewerStatus })[]> {
+    const events = await this.eventsRepository.find({
       where: isAdmin ? {} : { status: Not(EventStatus.DRAFT) },
       relations: EVENT_RELATIONS,
       order: { startsAt: 'ASC' },
     });
+    return withViewerStatus(events, await this.loadViewerSignups(viewerUserId, events));
   }
 
-  async findByIdForViewer(id: string, isAdmin: boolean): Promise<Event & { signups: EventSignup[] }> {
+  /** The viewer's own signups for these events, in ONE query (not per event). */
+  private async loadViewerSignups(viewerUserId: string | undefined, events: Event[]): Promise<ViewerSignupLike[]> {
+    if (!viewerUserId || events.length === 0) return [];
+    return this.signupsRepository.find({
+      where: { userId: viewerUserId, eventId: In(events.map((e) => e.id)) },
+      select: { id: true, eventId: true, status: true, eventTeamId: true },
+    });
+  }
+
+  async findByIdForViewer(
+    id: string,
+    isAdmin: boolean,
+    viewerUserId?: string,
+  ): Promise<Event & { signups: EventSignup[]; viewer: EventViewerStatus }> {
     const event = await this.findRawByIdOrThrow(id);
 
     // DRAFT is the only status actually hidden from members — an admin's still-being-set-up
@@ -308,7 +357,91 @@ export class EventsService {
       order: { signedUpAt: 'ASC' },
     });
 
-    return { ...event, signups };
+    const viewerSignup = viewerUserId ? signups.find((s) => s.userId === viewerUserId) : undefined;
+    return { ...event, signups, viewer: computeViewerStatus(event.status, viewerSignup) };
+  }
+
+  onModuleDestroy(): void {
+    for (const timer of this.announcementTimers.values()) clearTimeout(timer);
+    this.announcementTimers.clear();
+  }
+
+  /** Posts the announcement and remembers where it landed so the signup list can be edited in
+   * place later. Best-effort — publishing never waits on or fails because of Discord. */
+  private async announceEvent(event: Event): Promise<void> {
+    try {
+      const signups = await this.loadAnnouncementSignups(event.id);
+      const ref = await this.discordBotService.postEventAnnouncement(event, signups);
+      if (ref) {
+        await this.eventsRepository.update(event.id, {
+          discordChannelId: ref.channelId,
+          discordMessageId: ref.messageId,
+        });
+      }
+    } catch (err) {
+      this.logger.warn(`Announcing event ${event.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** Active (non-cancelled) signups in sign-up order, with each driver's display name — what the
+   * Discord post lists. */
+  private async loadAnnouncementSignups(eventId: string): Promise<AnnouncementSignup[]> {
+    const signups = await this.signupsRepository.find({
+      where: { eventId, status: Not(SignupStatus.CANCELLED) },
+      order: { signedUpAt: 'ASC' },
+    });
+    if (signups.length === 0) return [];
+
+    const profiles = await this.driverProfilesRepository.find({
+      where: { userId: In(signups.map((s) => s.userId)) },
+    });
+    const names = new Map<string, string>();
+    for (const profile of profiles) {
+      if (profile.userId) names.set(profile.userId, profile.iracingName ?? profile.displayName);
+    }
+    return signups.map((s) => ({ name: names.get(s.userId) ?? 'Unknown driver', carClass: s.carClass }));
+  }
+
+  /** Call after anything that changes who's signed up (or their class). Debounced per event. */
+  private scheduleAnnouncementRefresh(eventId: string): void {
+    const existing = this.announcementTimers.get(eventId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.announcementTimers.delete(eventId);
+      void this.refreshAnnouncement(eventId);
+    }, ANNOUNCEMENT_REFRESH_DEBOUNCE_MS);
+    this.announcementTimers.set(eventId, timer);
+  }
+
+  private async refreshAnnouncement(eventId: string): Promise<void> {
+    try {
+      const event = await this.eventsRepository.findOne({ where: { id: eventId }, relations: EVENT_RELATIONS });
+      // Never announced (or published before announcements were tracked): nothing to edit.
+      if (!event?.discordMessageId || !event.discordChannelId) return;
+
+      const signups = await this.loadAnnouncementSignups(eventId);
+      const result = await this.discordBotService.updateEventAnnouncement(
+        event,
+        { channelId: event.discordChannelId, messageId: event.discordMessageId },
+        signups,
+      );
+      if (result === 'gone') {
+        await this.eventsRepository.update(eventId, { discordChannelId: null, discordMessageId: null });
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Refreshing Discord announcement for event ${eventId} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /** Saves a signup and queues a refresh of the event's Discord post. */
+  private async saveSignup(signup: EventSignup, actorUserId?: string): Promise<EventSignup> {
+    const saved = await this.signupsRepository.save(signup);
+    this.scheduleAnnouncementRefresh(saved.eventId);
+    // A signup only shows on the plan of the team it is placed on.
+    if (saved.eventTeamId) this.planEvents?.emit(saved.eventId, saved.eventTeamId, 'drivers', actorUserId);
+    return saved;
   }
 
   /** Always confirms — there's no capacity to overflow, `timeslotIds` is just an availability
@@ -346,7 +479,7 @@ export class EventsService {
     if (existing) {
       existing.status = SignupStatus.CONFIRMED;
       this.applySignupFields(existing, dto, timeslots);
-      return this.signupsRepository.save(existing);
+      return this.saveSignup(existing, userId);
     }
 
     const signup = this.signupsRepository.create({
@@ -360,14 +493,19 @@ export class EventsService {
       status: SignupStatus.CONFIRMED,
       timeslots: timeslots ?? [],
     });
-    return this.signupsRepository.save(signup);
+    return this.saveSignup(signup, userId);
   }
 
   /** Admin edit of another driver's signup (start times, car class, stint hours, notes) — same
    * field semantics as signup(), but keyed by the signup rather than the caller, with no event
    * status gate (an admin fixing availability mid team-building is the whole point) and without
    * touching the signup's own status, so editing a cancelled signup doesn't silently revive it. */
-  async adminUpdateSignup(eventId: string, signupId: string, dto: SignupDto): Promise<EventSignup> {
+  async adminUpdateSignup(
+    eventId: string,
+    signupId: string,
+    dto: SignupDto,
+    actorUserId?: string,
+  ): Promise<EventSignup> {
     const event = await this.findRawByIdOrThrow(eventId);
     const signup = await this.signupsRepository.findOne({
       where: { id: signupId, eventId },
@@ -379,7 +517,7 @@ export class EventsService {
 
     const timeslots = await this.validateSignupChange(event, dto);
     this.applySignupFields(signup, dto, timeslots);
-    return this.signupsRepository.save(signup);
+    return this.saveSignup(signup, actorUserId);
   }
 
   /** Admin puts an approved member on an event (and, if given, straight onto one of its teams)
@@ -389,7 +527,7 @@ export class EventsService {
    * signup is tied to that start time, so the driver shows up in that team's availability grid
    * right away; with no hours set, planning treats them as free for any stint until someone
    * fills their availability in. */
-  async adminAddSignup(eventId: string, dto: AdminAddSignupDto): Promise<EventSignup> {
+  async adminAddSignup(eventId: string, dto: AdminAddSignupDto, actorUserId?: string): Promise<EventSignup> {
     const event = await this.findRawByIdOrThrow(eventId);
 
     const user = await this.usersRepository.findOne({ where: { id: dto.userId } });
@@ -418,10 +556,10 @@ export class EventsService {
       existing.status = SignupStatus.CONFIRMED;
       existing.eventTeamId = team?.id ?? null;
       if (teamSlot && existing.timeslots.length === 0) existing.timeslots = [teamSlot];
-      return this.signupsRepository.save(existing);
+      return this.saveSignup(existing, actorUserId);
     }
 
-    return this.signupsRepository.save(
+    return this.saveSignup(
       this.signupsRepository.create({
         eventId,
         userId: dto.userId,
@@ -430,6 +568,7 @@ export class EventsService {
         timeslots: teamSlot ? [teamSlot] : [],
         availableHours: [],
       }),
+      actorUserId,
     );
   }
 
@@ -475,7 +614,12 @@ export class EventsService {
   /** Places (or unplaces, if `eventTeamId` is null) a driver's signup onto one of the event's
    * teams — see EventTeam. Cross-checks the team belongs to the same event so a stray/forged id
    * can't attach a driver's roster entry to another event's crew. */
-  async assignSignupTeam(eventId: string, signupId: string, eventTeamId: string | null): Promise<EventSignup> {
+  async assignSignupTeam(
+    eventId: string,
+    signupId: string,
+    eventTeamId: string | null,
+    actorUserId?: string,
+  ): Promise<EventSignup> {
     const signup = await this.signupsRepository.findOne({ where: { id: signupId, eventId } });
     if (!signup) {
       throw new NotFoundException('Signup not found');
@@ -486,8 +630,14 @@ export class EventsService {
         throw new NotFoundException('Team not found for this event');
       }
     }
+    const previousTeamId = signup.eventTeamId;
     signup.eventTeamId = eventTeamId;
-    return this.signupsRepository.save(signup);
+    const saved = await this.signupsRepository.save(signup);
+    // Both crews' plans change: one loses the driver, the other gains them.
+    for (const teamId of new Set([previousTeamId, eventTeamId])) {
+      if (teamId) this.planEvents?.emit(eventId, teamId, 'drivers', actorUserId);
+    }
+    return saved;
   }
 
   async cancelSignup(eventId: string, userId: string): Promise<void> {
@@ -497,25 +647,28 @@ export class EventsService {
     }
 
     signup.status = SignupStatus.CANCELLED;
-    await this.signupsRepository.save(signup);
+    await this.saveSignup(signup, userId);
   }
 
-  async adminOverrideSignup(signupId: string, status: SignupStatus): Promise<EventSignup> {
+  async adminOverrideSignup(signupId: string, status: SignupStatus, actorUserId?: string): Promise<EventSignup> {
     const signup = await this.signupsRepository.findOne({ where: { id: signupId } });
     if (!signup) {
       throw new NotFoundException('Signup not found');
     }
 
     signup.status = status;
-    return this.signupsRepository.save(signup);
+    return this.saveSignup(signup, actorUserId);
   }
 
   /** Hard delete, unlike cancelSignup/adminOverrideSignup which only flip status — for admins
    * clearing out a signup entirely rather than recording it as cancelled. */
-  async deleteSignup(eventId: string, signupId: string): Promise<void> {
+  async deleteSignup(eventId: string, signupId: string, actorUserId?: string): Promise<void> {
     const result = await this.signupsRepository.delete({ id: signupId, eventId });
     if (result.affected === 0) {
       throw new NotFoundException('Signup not found');
     }
+    this.scheduleAnnouncementRefresh(eventId);
+    // The row is gone, so which team it sat on is unknown — nudge every crew of the event.
+    this.planEvents?.emit(eventId, ALL_TEAMS, 'drivers', actorUserId);
   }
 }

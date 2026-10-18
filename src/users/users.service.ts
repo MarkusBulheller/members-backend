@@ -42,6 +42,33 @@ export class UsersService {
     });
   }
 
+  /** Member counts per status (one grouped query) — drives the badges on the admin members tabs.
+   * Every status is always present (0 when nobody has it); `ALL` is the sum. */
+  async countByStatus(): Promise<Record<UserStatus | 'ALL', number>> {
+    const rows = await this.usersRepository
+      .createQueryBuilder('user')
+      .select('user.status', 'status')
+      .addSelect('COUNT(*)', 'count')
+      .groupBy('user.status')
+      .getRawMany<{ status: UserStatus; count: string }>();
+
+    const counts: Record<UserStatus | 'ALL', number> = {
+      [UserStatus.PENDING]: 0,
+      [UserStatus.APPROVED]: 0,
+      [UserStatus.SUSPENDED]: 0,
+      [UserStatus.REJECTED]: 0,
+      ALL: 0,
+    };
+    for (const row of rows) {
+      if (row.status in counts) {
+        const n = Number(row.count);
+        counts[row.status] = n;
+        counts.ALL += n;
+      }
+    }
+    return counts;
+  }
+
   /** Creates a new PENDING user from a freshly-verified Discord identity, refreshing the
    * cached Discord profile fields on every sign-in if the user already exists. */
   async upsertFromDiscord(profile: DiscordProfileInput): Promise<User> {

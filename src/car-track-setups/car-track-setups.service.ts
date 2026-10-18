@@ -29,6 +29,16 @@ export class CarTrackSetupsService {
     return this.setupsRepository.findOneOrFail({ where: { id: saved.id }, relations: { track: true } });
   }
 
+  /** Every setup recorded at a track, for cars that are still on the active roster, ordered by
+   * car name — each with its car's id/name/class so the track page can link back to the car. */
+  findByTrack(trackId: string): Promise<CarTrackSetup[]> {
+    return this.setupsRepository.find({
+      where: { trackId, car: { active: true } },
+      relations: { car: true },
+      order: { car: { name: 'ASC' } },
+    });
+  }
+
   async update(id: string, dto: UpdateCarTrackSetupDto): Promise<CarTrackSetup> {
     const setup = await this.setupsRepository.findOne({ where: { id } });
     if (!setup) {

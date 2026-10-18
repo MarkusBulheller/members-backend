@@ -38,6 +38,12 @@ export class AdminMembersController {
     return this.usersService.list(status as UserStatus | undefined);
   }
 
+  // Declared before `:id` so "counts" isn't captured as a member id.
+  @Get('counts')
+  counts() {
+    return this.usersService.countByStatus();
+  }
+
   @Get(':id')
   get(@Param('id') id: string) {
     return this.usersService.findByIdOrThrow(id);

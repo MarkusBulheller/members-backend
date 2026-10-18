@@ -101,6 +101,10 @@ export class DriverProfile {
   @Column({ name: 'night_driver', default: false })
   nightDriver: boolean;
 
+  /** Not a column — filled in per request by DriversService.withDiscordUsernameFor() for portal
+   * members (null for manual drivers), and only for the profile's owner and admins. */
+  discordUsername?: string | null;
+
   @OneToMany(() => AchievementAward, (award) => award.driverProfile)
   awards: Relation<AchievementAward>[];
 

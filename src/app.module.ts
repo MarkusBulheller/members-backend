@@ -39,6 +39,10 @@ import { UsersModule } from './users/users.module.js';
     ServeStaticModule.forRoot({
       rootPath: join(process.cwd(), 'uploads'),
       serveRoot: '/uploads',
+      // Every upload (avatars, cars, liveries, tracks) gets a fresh randomUUID filename and is never
+      // overwritten in place (a replaced avatar is a new file; the old one is deleted), so a URL's
+      // content never changes: cache for a year, immutable.
+      serveStaticOptions: { maxAge: 31_536_000_000, immutable: true },
     }),
     AuthGuardsModule,
     UsersModule,

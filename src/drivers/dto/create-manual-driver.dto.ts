@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
-import { IsBoolean, IsIn, IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { MAX_SUCCESSIVE_STINTS_CAP } from '../driver.constants.js';
 
 // Intl.supportedValuesOf('timeZone') returns the runtime's IANA tz database — see the identical
 // validation in UpdateDriverProfileDto.
@@ -63,6 +64,7 @@ export class CreateManualDriverDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(MAX_SUCCESSIVE_STINTS_CAP)
   maxSuccessiveStints?: number;
 
   @IsOptional()

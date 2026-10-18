@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CarsModule } from '../cars/cars.module.js';
 import { DriversModule } from '../drivers/drivers.module.js';
+import { IracingTeam } from '../iracing/iracing-team.entity.js';
 import { IracingModule } from '../iracing/iracing.module.js';
 import { TracksModule } from '../tracks/tracks.module.js';
 import { RaceResultDriverStint } from './race-result-driver-stint.entity.js';
@@ -13,7 +14,7 @@ import { RaceResultsService } from './race-results.service.js';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([RaceResult, RaceResultDriverStint, RaceResultLap]),
+    TypeOrmModule.forFeature([RaceResult, RaceResultDriverStint, RaceResultLap, IracingTeam]),
     IracingModule,
     DriversModule,
     CarsModule,

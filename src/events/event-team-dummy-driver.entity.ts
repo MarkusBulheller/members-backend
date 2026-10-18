@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -24,6 +25,7 @@ export class EventTeamDummyDriver {
   @JoinColumn({ name: 'event_team_id' })
   eventTeam: Relation<EventTeam>;
 
+  @Index('idx_event_team_dummy_drivers_event_team_id')
   @Column({ name: 'event_team_id' })
   eventTeamId: string;
 

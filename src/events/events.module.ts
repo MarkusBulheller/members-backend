@@ -10,6 +10,7 @@ import { EventTeamDriverSettings } from './event-team-driver-settings.entity.js'
 import { EventTeamDummyDriversController } from './event-team-dummy-drivers.controller.js';
 import { EventTeamDummyDriversService } from './event-team-dummy-drivers.service.js';
 import { EventTeamDummyDriver } from './event-team-dummy-driver.entity.js';
+import { EventTeamUpcomingStintsService } from './event-team-upcoming-stints.service.js';
 import { EventTeamStint } from './event-team-stint.entity.js';
 import { EventTeamStintsController } from './event-team-stints.controller.js';
 import { EventTeamStintsService } from './event-team-stints.service.js';
@@ -21,6 +22,8 @@ import { Event } from './event.entity.js';
 import { EventsController } from './events.controller.js';
 import { EventsService } from './events.service.js';
 import { PublicEventsController } from './public-events.controller.js';
+import { TeamPlanEventsService } from './team-plan-events.service.js';
+import { TeamPlanStreamController } from './team-plan-stream.controller.js';
 
 @Module({
   imports: [
@@ -44,6 +47,7 @@ import { PublicEventsController } from './public-events.controller.js';
     EventTeamDriverSettingsController,
     EventTeamDummyDriversController,
     PublicEventsController,
+    TeamPlanStreamController,
   ],
   providers: [
     EventsService,
@@ -51,6 +55,9 @@ import { PublicEventsController } from './public-events.controller.js';
     EventTeamStintsService,
     EventTeamDriverSettingsService,
     EventTeamDummyDriversService,
+    EventTeamUpcomingStintsService,
+    TeamPlanEventsService,
   ],
+  exports: [TeamPlanEventsService],
 })
 export class EventsModule {}

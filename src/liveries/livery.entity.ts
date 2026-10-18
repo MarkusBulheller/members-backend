@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -18,6 +19,7 @@ export class Livery {
   @JoinColumn({ name: 'car_id' })
   car: Relation<Car>;
 
+  @Index('idx_liveries_car_id')
   @Column({ name: 'car_id' })
   carId: string;
 
@@ -33,4 +35,8 @@ export class Livery {
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
+
+  /** Not a column — display name of the uploader, resolved at read time by CarsService (driver
+   * profile display name, falling back to the Discord name). Null when the uploader is gone. */
+  uploadedByName?: string | null;
 }

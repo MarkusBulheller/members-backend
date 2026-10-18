@@ -22,6 +22,7 @@ export class TeamHighlightsService {
       period: dto.period,
       title: dto.title,
       description: dto.description,
+      position: dto.position ?? null,
       order: (maxOrder ?? -1) + 1,
     });
     return this.highlightsRepository.save(highlight);
@@ -32,6 +33,8 @@ export class TeamHighlightsService {
     if (dto.period !== undefined) highlight.period = dto.period;
     if (dto.title !== undefined) highlight.title = dto.title;
     if (dto.description !== undefined) highlight.description = dto.description;
+    // `undefined` leaves the badge alone; an explicit null clears it.
+    if (dto.position !== undefined) highlight.position = dto.position;
     return this.highlightsRepository.save(highlight);
   }
 

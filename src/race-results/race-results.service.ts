@@ -6,12 +6,17 @@ import { CarsService } from '../cars/cars.service.js';
 import { DriversService } from '../drivers/drivers.service.js';
 import { IracingCarsService } from '../iracing/iracing-cars.service.js';
 import { IracingRaceResultLookupService } from '../iracing/iracing-race-result-lookup.service.js';
+import { IracingTeam } from '../iracing/iracing-team.entity.js';
 import { IracingTracksService } from '../iracing/iracing-tracks.service.js';
 import { IracingRaceResultDriverData } from '../iracing/iracing.service.js';
 import { TracksService } from '../tracks/tracks.service.js';
 import { RaceResultDriverStint } from './race-result-driver-stint.entity.js';
 import { RaceResultLap } from './race-result-lap.entity.js';
 import { RaceResult } from './race-result.entity.js';
+
+/** A race result as returned by the single-result endpoints: the entity plus the display name of
+ * the iRacing team it was imported for (null if that team isn't in the synced team cache). */
+export type RaceResultWithTeam = RaceResult & { teamName: string | null };
 
 @Injectable()
 export class RaceResultsService {
@@ -22,6 +27,8 @@ export class RaceResultsService {
     private readonly stintsRepository: Repository<RaceResultDriverStint>,
     @InjectRepository(RaceResultLap)
     private readonly lapsRepository: Repository<RaceResultLap>,
+    @InjectRepository(IracingTeam)
+    private readonly teamsRepository: Repository<IracingTeam>,
     private readonly lookupService: IracingRaceResultLookupService,
     private readonly driversService: DriversService,
     private readonly carsService: CarsService,
@@ -56,11 +63,18 @@ export class RaceResultsService {
     });
   }
 
+  /** Adds `teamName` (additive field) by resolving the result's iRacing teamId against the synced
+   * `iracing_teams` cache. Stays null when the team has never been synced — the portal then just
+   * omits the team from the subline. */
+  private async withTeamName(result: RaceResult): Promise<RaceResultWithTeam> {
+    const team = await this.teamsRepository.findOne({ where: { teamId: result.teamId } });
+    return Object.assign(result, { teamName: team?.teamName ?? null });
+  }
+
+  /** Summary rows only (no driverStints / laps): the results list page reads just the result
+   * columns, so the per-result stint joins are skipped. Detail and shared endpoints are unchanged. */
   list(): Promise<RaceResult[]> {
-    return this.raceResultsRepository.find({
-      relations: { driverStints: true },
-      order: { startTime: 'DESC' },
-    });
+    return this.raceResultsRepository.find({ order: { startTime: 'DESC' } });
   }
 
   /** Every result a given driver has a stint in — used by DriverDetailPage's "Races" section.
@@ -77,26 +91,18 @@ export class RaceResultsService {
       .getMany();
   }
 
-  /** Every result for a given roster Car — used by CarDetailPage's "Races" section. Direct FK
+  /** Every result for a given roster Car (summary rows, no driverStints) — used by CarDetailPage's "Races" section. Direct FK
    * filter, unlike findByDriverProfileId's join, since carId lives on the result itself. */
   findByCarId(carId: string): Promise<RaceResult[]> {
-    return this.raceResultsRepository.find({
-      where: { carId },
-      relations: { driverStints: true },
-      order: { startTime: 'DESC' },
-    });
+    return this.raceResultsRepository.find({ where: { carId }, order: { startTime: 'DESC' } });
   }
 
-  /** Every result at a given roster Track — used by TrackDetailPage's "Races" section. */
+  /** Every result at a given roster Track (summary rows, no driverStints) — used by TrackDetailPage's "Races" section. */
   findByTrackId(trackId: string): Promise<RaceResult[]> {
-    return this.raceResultsRepository.find({
-      where: { trackId },
-      relations: { driverStints: true },
-      order: { startTime: 'DESC' },
-    });
+    return this.raceResultsRepository.find({ where: { trackId }, order: { startTime: 'DESC' } });
   }
 
-  async findByIdOrThrow(id: string): Promise<RaceResult> {
+  async findByIdOrThrow(id: string): Promise<RaceResultWithTeam> {
     const result = await this.raceResultsRepository.findOne({
       where: { id },
       relations: { driverStints: true, laps: true },
@@ -104,10 +110,10 @@ export class RaceResultsService {
     if (!result) {
       throw new NotFoundException('Race result not found');
     }
-    return result;
+    return this.withTeamName(result);
   }
 
-  async importFromIracing(adminUserId: string, subsessionId: number, teamId: number): Promise<RaceResult> {
+  async importFromIracing(adminUserId: string, subsessionId: number, teamId: number): Promise<RaceResultWithTeam> {
     const existing = await this.raceResultsRepository.findOne({ where: { subsessionId, teamId } });
     if (existing) {
       throw new ConflictException('This result has already been added.');
@@ -224,7 +230,7 @@ export class RaceResultsService {
   /** Public, unauthenticated lookup by share token — see PublicRaceResultsController. Only
    * reachable at all if an admin has explicitly generated a link via generateShareLink(); every
    * other result stays login-gated. */
-  async findByShareTokenOrThrow(shareToken: string): Promise<RaceResult> {
+  async findByShareTokenOrThrow(shareToken: string): Promise<RaceResultWithTeam> {
     const result = await this.raceResultsRepository.findOne({
       where: { shareToken },
       relations: { driverStints: true, laps: true },
@@ -232,7 +238,7 @@ export class RaceResultsService {
     if (!result) {
       throw new NotFoundException('Shared result not found');
     }
-    return result;
+    return this.withTeamName(result);
   }
 
   /** Idempotent: returns the existing token if this result is already shared, otherwise mints a

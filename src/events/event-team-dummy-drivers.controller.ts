@@ -1,8 +1,10 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { CurrentUser } from '../common/decorators/current-user.decorator.js';
 import { Roles } from '../common/decorators/roles.decorator.js';
 import { Role } from '../common/enums/role.enum.js';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
 import { RolesGuard } from '../common/guards/roles.guard.js';
+import { User } from '../users/user.entity.js';
 import { CreateEventTeamDummyDriverDto } from './dto/create-event-team-dummy-driver.dto.js';
 import { UpdateEventTeamDummyDriverDto } from './dto/update-event-team-dummy-driver.dto.js';
 import { EventTeamDummyDriversService } from './event-team-dummy-drivers.service.js';
@@ -24,8 +26,9 @@ export class EventTeamDummyDriversController {
     @Param('eventId') eventId: string,
     @Param('teamId') teamId: string,
     @Body() dto: CreateEventTeamDummyDriverDto,
+    @CurrentUser() user: User,
   ) {
-    return this.dummyDriversService.create(eventId, teamId, dto);
+    return this.dummyDriversService.create(eventId, teamId, dto, user.id);
   }
 
   @Patch(':dummyId')
@@ -36,14 +39,20 @@ export class EventTeamDummyDriversController {
     @Param('teamId') teamId: string,
     @Param('dummyId') dummyId: string,
     @Body() dto: UpdateEventTeamDummyDriverDto,
+    @CurrentUser() user: User,
   ) {
-    return this.dummyDriversService.update(eventId, teamId, dummyId, dto);
+    return this.dummyDriversService.update(eventId, teamId, dummyId, dto, user.id);
   }
 
   @Delete(':dummyId')
   @UseGuards(RolesGuard)
   @Roles(Role.ADMIN)
-  remove(@Param('eventId') eventId: string, @Param('teamId') teamId: string, @Param('dummyId') dummyId: string) {
-    return this.dummyDriversService.remove(eventId, teamId, dummyId);
+  remove(
+    @Param('eventId') eventId: string,
+    @Param('teamId') teamId: string,
+    @Param('dummyId') dummyId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.dummyDriversService.remove(eventId, teamId, dummyId, user.id);
   }
 }

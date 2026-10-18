@@ -19,6 +19,12 @@ export class TeamHighlight {
   @Column({ type: 'text' })
   description: string;
 
+  /** Optional finishing position (1 = win), shown as a "P#" badge on the dashboard's highlights
+   * card. Null for highlights that aren't a race result (founding, a new sponsor, etc.) — nullable
+   * so rows that predate this column keep working. */
+  @Column({ type: 'int', nullable: true })
+  position: number | null;
+
   /** Display order on the timeline — admin-reorderable (see move()), not derived from `period`
    * since that's free text and can't be sorted reliably. */
   @Column({ name: 'sort_order', type: 'int' })

@@ -31,6 +31,14 @@ export class CreateEventDto {
   @Max(100)
   fuelLimitPercent?: number | null;
 
+  /** LMU tyre budget per car, in individual tyres (1-999). Null clears it. */
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsInt()
+  @Min(1)
+  @Max(999)
+  tyreLimit?: number | null;
+
   @IsString()
   @MaxLength(150)
   title: string;

@@ -65,8 +65,16 @@ export class AuthController {
     return res.redirect(`${this.frontendUrl}/dashboard`);
   }
 
+  /** Unauthenticated, non-sensitive config the signed-out / pending screens need. */
+  @Get('config')
+  publicConfig() {
+    return { discordInviteUrl: this.authService.discordInviteUrl };
+  }
+
+  // Deliberately not behind JwtAuthGuard: it only clears the caller's own cookie, and people who
+  // are pending/rejected/suspended (or hold a stale cookie) fail JwtAuthGuard yet still need to
+  // be able to sign out.
   @Post('logout')
-  @UseGuards(JwtAuthGuard)
   logout(@Res({ passthrough: true }) res: Response) {
     res.clearCookie(this.authService.sessionCookieName, this.authService.sessionCookieOptions());
     return { success: true };

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { toDecimalString } from '../common/decimal.util.js';
@@ -6,10 +6,12 @@ import { CreateEventTeamDto } from './dto/create-event-team.dto.js';
 import { UpdateEventTeamDto } from './dto/update-event-team.dto.js';
 import { EventTeam } from './event-team.entity.js';
 import { EventTimeslot } from './event-timeslot.entity.js';
+import { TeamPlanEventsService } from './team-plan-events.service.js';
 
 const DECIMAL_FIELD_KEYS = [
   'refuelDurationSeconds',
   'tyreChangeDurationSeconds',
+  'partialTyreChangeSeconds',
   'pitstopDrivethroughSeconds',
   'lapTimeDrySeconds',
   'lapTimeWetSeconds',
@@ -27,6 +29,7 @@ export class EventTeamsService {
     private readonly teamsRepository: Repository<EventTeam>,
     @InjectRepository(EventTimeslot)
     private readonly timeslotsRepository: Repository<EventTimeslot>,
+    @Optional() private readonly planEvents?: TeamPlanEventsService,
   ) {}
 
   listForEvent(eventId: string): Promise<EventTeam[]> {
@@ -35,6 +38,19 @@ export class EventTeamsService {
       relations: { dummyDrivers: true },
       order: { createdAt: 'ASC' },
     });
+  }
+
+  /** One team of the event with its guest/dummy drivers — the same shape as an element of
+   * listForEvent(), without loading the event's other teams. 404 when the team is not in the event. */
+  async findOneForEvent(eventId: string, teamId: string): Promise<EventTeam> {
+    const team = await this.teamsRepository.findOne({
+      where: { id: teamId, eventId },
+      relations: { dummyDrivers: true },
+    });
+    if (!team) {
+      throw new NotFoundException('Team not found');
+    }
+    return team;
   }
 
   async create(eventId: string, dto: CreateEventTeamDto): Promise<EventTeam> {
@@ -51,7 +67,7 @@ export class EventTeamsService {
     return this.teamsRepository.save(team);
   }
 
-  async update(eventId: string, teamId: string, dto: UpdateEventTeamDto): Promise<EventTeam> {
+  async update(eventId: string, teamId: string, dto: UpdateEventTeamDto, actorUserId?: string): Promise<EventTeam> {
     const team = await this.findOrThrow(eventId, teamId);
     await this.checkTimeslotBelongsToEvent(eventId, dto.timeslotId);
     if (dto.name !== undefined) team.name = dto.name;
@@ -60,7 +76,9 @@ export class EventTeamsService {
     if (dto.timeslotId !== undefined) team.timeslotId = dto.timeslotId;
     if (dto.simStartTimeOfDay !== undefined) team.simStartTimeOfDay = dto.simStartTimeOfDay;
     Object.assign(team, this.decimalFields(dto));
-    return this.teamsRepository.save(team);
+    const saved = await this.teamsRepository.save(team);
+    this.planEvents?.emit(eventId, teamId, 'team', actorUserId);
+    return saved;
   }
 
   /** A team's chosen timeslot must belong to the same event — guards against a stray/forged id
@@ -74,9 +92,10 @@ export class EventTeamsService {
     }
   }
 
-  async remove(eventId: string, teamId: string): Promise<void> {
+  async remove(eventId: string, teamId: string, actorUserId?: string): Promise<void> {
     const team = await this.findOrThrow(eventId, teamId);
     await this.teamsRepository.remove(team);
+    this.planEvents?.emit(eventId, teamId, 'team', actorUserId);
   }
 
   /** Only includes a key when the dto actually carries it — a key present with value `undefined`

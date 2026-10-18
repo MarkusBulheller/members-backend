@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Header } from '@nestjs/common';
 import { StatsService } from './stats.service.js';
 
 /** Deliberately unguarded — the public marketing site (a separate, anonymous project with no
@@ -11,6 +11,7 @@ export class PublicStatsController {
   constructor(private readonly statsService: StatsService) {}
 
   @Get('public-summary')
+  @Header('Cache-Control', 'public, max-age=60')
   getPublicSummary() {
     return this.statsService.getPublicSummary();
   }

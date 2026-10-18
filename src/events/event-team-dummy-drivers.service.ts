@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { DriverProfile } from '../drivers/driver-profile.entity.js';
@@ -8,6 +8,7 @@ import { EventTeamDriverSettings } from './event-team-driver-settings.entity.js'
 import { EventTeamDummyDriver } from './event-team-dummy-driver.entity.js';
 import { EventTeamStint } from './event-team-stint.entity.js';
 import { EventTeam } from './event-team.entity.js';
+import { TeamPlanEventsService } from './team-plan-events.service.js';
 
 @Injectable()
 export class EventTeamDummyDriversService {
@@ -22,6 +23,7 @@ export class EventTeamDummyDriversService {
     private readonly settingsRepository: Repository<EventTeamDriverSettings>,
     @InjectRepository(DriverProfile)
     private readonly driverProfilesRepository: Repository<DriverProfile>,
+    @Optional() private readonly planEvents?: TeamPlanEventsService,
   ) {}
 
   async list(eventId: string, teamId: string): Promise<EventTeamDummyDriver[]> {
@@ -29,7 +31,12 @@ export class EventTeamDummyDriversService {
     return this.dummiesRepository.find({ where: { eventTeamId: teamId }, order: { createdAt: 'ASC' } });
   }
 
-  async create(eventId: string, teamId: string, dto: CreateEventTeamDummyDriverDto): Promise<EventTeamDummyDriver> {
+  async create(
+    eventId: string,
+    teamId: string,
+    dto: CreateEventTeamDummyDriverDto,
+    actorUserId?: string,
+  ): Promise<EventTeamDummyDriver> {
     await this.assertTeam(eventId, teamId);
 
     let name = dto.name?.trim() ?? '';
@@ -61,9 +68,11 @@ export class EventTeamDummyDriversService {
     if (!name) {
       throw new BadRequestException('Provide a name or a roster driver');
     }
-    return this.dummiesRepository.save(
+    const saved = await this.dummiesRepository.save(
       this.dummiesRepository.create({ eventTeamId: teamId, name, driverProfileId, availableHours: [] }),
     );
+    this.planEvents?.emit(eventId, teamId, 'drivers', actorUserId);
+    return saved;
   }
 
   async update(
@@ -71,21 +80,27 @@ export class EventTeamDummyDriversService {
     teamId: string,
     dummyId: string,
     dto: UpdateEventTeamDummyDriverDto,
+    actorUserId?: string,
   ): Promise<EventTeamDummyDriver> {
     const dummy = await this.findOrThrow(eventId, teamId, dummyId);
     if (dto.name !== undefined) dummy.name = dto.name.trim();
     if (dto.availableHours !== undefined) dummy.availableHours = dto.availableHours.map((h) => new Date(h));
-    return this.dummiesRepository.save(dummy);
+    const saved = await this.dummiesRepository.save(dummy);
+    this.planEvents?.emit(eventId, teamId, 'drivers', actorUserId);
+    return saved;
   }
 
   /** Stints and driver settings reference a dummy by plain id with no FK (same as real drivers),
    * so nothing cascades from the row delete — clear them here: stints go back to unassigned
    * rather than being deleted, the per-driver pace/fuel row has no meaning without the driver. */
-  async remove(eventId: string, teamId: string, dummyId: string): Promise<void> {
+  async remove(eventId: string, teamId: string, dummyId: string, actorUserId?: string): Promise<void> {
     const dummy = await this.findOrThrow(eventId, teamId, dummyId);
     await this.stintsRepository.update({ eventTeamId: teamId, driverUserId: dummyId }, { driverUserId: null });
     await this.settingsRepository.delete({ eventTeamId: teamId, userId: dummyId });
     await this.dummiesRepository.remove(dummy);
+    // Its stints went back to unassigned too, so the stint list changed as well.
+    this.planEvents?.emit(eventId, teamId, 'drivers', actorUserId);
+    this.planEvents?.emit(eventId, teamId, 'stints', actorUserId);
   }
 
   private async assertTeam(eventId: string, teamId: string): Promise<void> {

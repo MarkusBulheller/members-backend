@@ -1,6 +1,7 @@
 import {
   Column,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -24,6 +25,7 @@ export class EventTeamStint {
   @JoinColumn({ name: 'event_team_id' })
   eventTeam: Relation<EventTeam>;
 
+  @Index('idx_event_team_stints_event_team_id')
   @Column({ name: 'event_team_id' })
   eventTeamId: string;
 
@@ -31,6 +33,7 @@ export class EventTeamStint {
   order: number;
 
   /** Plain column, not a relation to User — same decoupling rationale as EventSignup.userId. */
+  @Index('idx_event_team_stints_driver_user_id')
   @Column({ name: 'driver_user_id', type: 'varchar', nullable: true })
   driverUserId: string | null;
 
@@ -43,6 +46,14 @@ export class EventTeamStint {
    * assuming a full tyre change at every stop. */
   @Column({ name: 'tyre_change', type: 'boolean', default: true })
   tyreChange: boolean;
+
+  /** How many of the car's four tyres get changed in the pit stop immediately before this stint
+   * (0-4) — ignored for the first stint. Null on rows that predate this column: read those as 4
+   * when `tyreChange` is true, 0 when false (see resolveTyresChanged). Whenever this is written,
+   * `tyreChange` is kept in sync (tyreChange === tyresChanged > 0), so every consumer of the old
+   * boolean keeps working. Counted against Event.tyreLimit on LMU events. */
+  @Column({ name: 'tyres_changed', type: 'smallint', nullable: true })
+  tyresChanged: number | null;
 
   /** Set via the "Start Now" button (server-generated timestamp, not client-supplied — avoids a
    * driver's own clock skew) when this stint actually starts. Null until then; toggled back to

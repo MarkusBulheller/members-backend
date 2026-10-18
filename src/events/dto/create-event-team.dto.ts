@@ -33,6 +33,13 @@ export class CreateEventTeamDto {
   @Min(0)
   tyreChangeDurationSeconds?: number | null;
 
+  /** LMU: seconds for a stop that changes only 1-2 tyres; null clears it (default 5 s applies). */
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsNumber()
+  @Min(0)
+  partialTyreChangeSeconds?: number | null;
+
   @IsOptional()
   @ValidateIf((_, value) => value !== null)
   @IsNumber()

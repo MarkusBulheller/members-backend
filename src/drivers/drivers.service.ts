@@ -1,15 +1,34 @@
-import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { unlink } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Repository } from 'typeorm';
+import { AchievementAward } from '../achievements/achievement-award.entity.js';
+import { Role } from '../common/enums/role.enum.js';
+import { User } from '../users/user.entity.js';
 import { AVATARS_UPLOAD_DIR } from './avatar-multer.config.js';
+import { MAX_SUCCESSIVE_STINTS_CAP } from './driver.constants.js';
 import { DriverProfile } from './driver-profile.entity.js';
 import { CreateManualDriverDto } from './dto/create-manual-driver.dto.js';
 import { UpdateDriverProfileDto } from './dto/update-driver-profile.dto.js';
 import { UpdateManualDriverDto } from './dto/update-manual-driver.dto.js';
 
 const DRIVER_RELATIONS = { awards: { tier: { definition: true } } } as const;
+
+const DISCORD_AVATAR_HOST = 'cdn.discordapp.com';
+const DISCORD_AVATAR_MAX_BYTES = 3 * 1024 * 1024;
+const AVATAR_EXTENSIONS: Record<string, string> = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp' };
+
+/** A driver as returned by GET /drivers: the profile without its awards tree, plus how many awards it has. */
+export type DriverListItem = Omit<DriverProfile, 'awards'> & { awardCount: number };
 
 export interface IracingSnapshot {
   custId: number;
@@ -28,7 +47,36 @@ export class DriversService {
   constructor(
     @InjectRepository(DriverProfile)
     private readonly driverProfilesRepository: Repository<DriverProfile>,
+    @InjectRepository(User)
+    private readonly usersRepository: Repository<User>,
   ) {}
+
+  /** The UI caps "Max stints in a row" at MAX_SUCCESSIVE_STINTS_CAP, but rows saved before that cap
+   * existed may hold a larger value. The form always re-submits every field, so a plain DTO @Max
+   * would make such a profile impossible to save. Instead a value above the cap is only rejected
+   * when it is a *change* — re-submitting the stored value is fine. null (clear) is always fine. */
+  private assertMaxStintsAllowed(next: number | null | undefined, current: number | null): void {
+    if (next === undefined || next === null) return;
+    if (next > MAX_SUCCESSIVE_STINTS_CAP && next !== current) {
+      throw new BadRequestException(`maxSuccessiveStints must not be greater than ${MAX_SUCCESSIVE_STINTS_CAP}`);
+    }
+  }
+
+  /** Adds the member's Discord username to a linked profile's payload (transient field, not a
+   * column). Only the profile's owner and admins get it — other members just don't see the
+   * handle. Manual drivers have no Discord account, so it stays null. */
+  async withDiscordUsernameFor(profile: DriverProfile, viewer: Pick<User, 'id' | 'role'>): Promise<DriverProfile> {
+    if (profile.userId === null) {
+      profile.discordUsername = null;
+      return profile;
+    }
+    if (viewer.role !== Role.ADMIN && viewer.id !== profile.userId) {
+      return profile;
+    }
+    const owner = await this.usersRepository.findOne({ where: { id: profile.userId } });
+    profile.discordUsername = owner?.discordUsername ?? null;
+    return profile;
+  }
 
   /** Idempotent: a user being re-approved after a suspension already has a profile, so this
    * returns the existing one instead of violating the unique userId constraint. */
@@ -94,6 +142,7 @@ export class DriversService {
   async updateManualDriver(id: string, dto: UpdateManualDriverDto): Promise<DriverProfile> {
     const profile = await this.findByIdOrThrow(id);
     this.guardIsManualProfile(profile);
+    this.assertMaxStintsAllowed(dto.maxSuccessiveStints, profile.maxSuccessiveStints);
 
     Object.assign(profile, {
       ...(dto.displayName !== undefined && { displayName: dto.displayName }),
@@ -126,11 +175,27 @@ export class DriversService {
     }
   }
 
-  findAll(): Promise<DriverProfile[]> {
-    return this.driverProfilesRepository.find({
-      relations: DRIVER_RELATIONS,
-      order: { displayName: 'ASC' },
-    });
+  /** Roster list: the profile plus `awardCount` instead of the nested awards -> tier -> definition
+   * tree (GET /drivers/:id still returns the full awards). One grouped COUNT query, no row multiplication. */
+  async findAll(): Promise<DriverListItem[]> {
+    const [profiles, awardCounts] = await Promise.all([
+      this.driverProfilesRepository.find({ order: { displayName: 'ASC' } }),
+      this.awardCountsByDriver(),
+    ]);
+    return profiles.map(
+      (profile) => Object.assign(profile, { awardCount: awardCounts.get(profile.id) ?? 0 }) as unknown as DriverListItem,
+    );
+  }
+
+  /** achievement_awards rows per driver profile, one grouped query. Drivers without any are absent. */
+  private async awardCountsByDriver(): Promise<Map<string, number>> {
+    const rows = await this.driverProfilesRepository.manager
+      .createQueryBuilder(AchievementAward, 'award')
+      .select('award.driverProfileId', 'driverProfileId')
+      .addSelect('COUNT(*)', 'count')
+      .groupBy('award.driverProfileId')
+      .getRawMany<{ driverProfileId: string; count: string }>();
+    return new Map(rows.map((row) => [row.driverProfileId, Number(row.count)]));
   }
 
   async findByIdOrThrow(id: string): Promise<DriverProfile> {
@@ -164,6 +229,7 @@ export class DriversService {
 
   async updateOwnProfile(userId: string, dto: UpdateDriverProfileDto): Promise<DriverProfile> {
     const profile = await this.findByUserIdOrThrow(userId);
+    this.assertMaxStintsAllowed(dto.maxSuccessiveStints, profile.maxSuccessiveStints);
 
     if (dto.iracingCustomerId && dto.iracingCustomerId !== profile.iracingCustomerId) {
       await this.ensureIracingIdAvailable(dto.iracingCustomerId, profile.id);
@@ -182,6 +248,7 @@ export class DriversService {
     if (profile.userId === null) {
       throw new ConflictException('This driver is not a portal member — edit them from the driver list instead.');
     }
+    this.assertMaxStintsAllowed(dto.maxSuccessiveStints, profile.maxSuccessiveStints);
 
     if (dto.iracingCustomerId && dto.iracingCustomerId !== profile.iracingCustomerId) {
       await this.ensureIracingIdAvailable(dto.iracingCustomerId, profile.id);
@@ -250,9 +317,64 @@ export class DriversService {
     return this.clearAvatarFile(profile);
   }
 
-  private async applyAvatarFile(profile: DriverProfile, file: Express.Multer.File): Promise<DriverProfile> {
+  /** "Use Discord avatar": copies the image behind the member's cached Discord avatar URL into our
+   * own avatar storage, so it goes through exactly the same mechanism (and cleanup) as an uploaded
+   * photo and keeps working if their Discord avatar later changes or is removed. */
+  async setOwnAvatarFromDiscord(userId: string): Promise<DriverProfile> {
+    const profile = await this.findByUserIdOrThrow(userId);
+    const user = await this.usersRepository.findOne({ where: { id: userId } });
+    if (!user?.discordAvatarUrl) {
+      throw new BadRequestException('Your Discord account has no custom avatar to use.');
+    }
+
+    let url: URL;
+    try {
+      url = new URL(user.discordAvatarUrl);
+    } catch {
+      throw new BadRequestException('Your Discord avatar URL is invalid.');
+    }
+    // Defence in depth: the URL is built by DiscordService from the OAuth response, but never fetch
+    // anything other than Discord's own CDN on a user's behalf.
+    if (url.protocol !== 'https:' || url.hostname !== DISCORD_AVATAR_HOST) {
+      throw new BadRequestException('Your Discord avatar URL is invalid.');
+    }
+    url.searchParams.set('size', '256');
+
+    let buffer: Buffer;
+    let extension: string;
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) {
+        throw new Error(`Discord CDN responded ${response.status}`);
+      }
+      const contentType = (response.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+      const knownExtension = AVATAR_EXTENSIONS[contentType];
+      if (!knownExtension) {
+        throw new Error(`Unexpected content type "${contentType}"`);
+      }
+      extension = knownExtension;
+      buffer = Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      this.logger.warn(`Could not download Discord avatar for user ${userId}: ${(error as Error).message}`);
+      throw new BadGatewayException('Could not download your Discord avatar — try again later.');
+    }
+    if (buffer.length === 0 || buffer.length > DISCORD_AVATAR_MAX_BYTES) {
+      throw new BadGatewayException('Could not download your Discord avatar — try again later.');
+    }
+
+    const filename = `${randomUUID()}${extension}`;
+    await mkdir(AVATARS_UPLOAD_DIR, { recursive: true });
+    await writeFile(join(AVATARS_UPLOAD_DIR, filename), buffer);
+    return this.applyAvatarFilename(profile, filename);
+  }
+
+  private applyAvatarFile(profile: DriverProfile, file: Express.Multer.File): Promise<DriverProfile> {
+    return this.applyAvatarFilename(profile, file.filename);
+  }
+
+  private async applyAvatarFilename(profile: DriverProfile, filename: string): Promise<DriverProfile> {
     await this.deleteAvatarFileIfPresent(profile.avatarUrl);
-    profile.avatarUrl = `/uploads/avatars/${file.filename}`;
+    profile.avatarUrl = `/uploads/avatars/${filename}`;
     return this.driverProfilesRepository.save(profile);
   }
 
