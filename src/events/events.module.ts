@@ -43,6 +43,8 @@ import { ReadinessController } from './readiness/readiness.controller.js';
 import { ReadinessService } from './readiness/readiness.service.js';
 import { EventTeamThreadController } from './event-team-thread.controller.js';
 import { EventTeamThreadService } from './event-team-thread.service.js';
+import { EventChannelController } from './event-channel.controller.js';
+import { EventChannelService } from './event-channel.service.js';
 
 @Module({
   imports: [
@@ -79,6 +81,7 @@ import { EventTeamThreadService } from './event-team-thread.service.js';
     PublicFollowController,
     ReadinessController,
     EventTeamThreadController,
+    EventChannelController,
   ],
   providers: [
     EventsService,
@@ -95,6 +98,7 @@ import { EventTeamThreadService } from './event-team-thread.service.js';
     FollowStreamService,
     ReadinessService,
     EventTeamThreadService,
+    EventChannelService,
   ],
   exports: [TeamPlanEventsService, EventsService, EventGuestSignupsService],
 })

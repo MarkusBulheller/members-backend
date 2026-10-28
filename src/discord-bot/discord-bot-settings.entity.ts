@@ -23,6 +23,11 @@ export class DiscordBotSettings {
   @Column({ name: 'results_channel_id', type: 'varchar', nullable: true })
   resultsChannelId: string | null;
 
+  /** Category (a Discord channel of type "category") in which the per-event channels are created
+   * from the event page. Null = the feature is off until an admin sets it. */
+  @Column({ name: 'event_category_id', type: 'varchar', nullable: true })
+  eventCategoryId: string | null;
+
   /** The Discord application's public key (64 hex chars) — used to verify the Ed25519 signature
    * on every request Discord sends to POST /discord/interactions (button clicks etc.). Not a
    * secret in itself, but stored like the bot token (`select: false`, only reported to the admin

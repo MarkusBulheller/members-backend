@@ -169,6 +169,9 @@ CREATE TABLE IF NOT EXISTS event_team_leads (
 );
 CREATE INDEX IF NOT EXISTS idx_event_team_leads_user_id ON event_team_leads (user_id);
 ALTER TABLE event_teams ADD COLUMN IF NOT EXISTS discord_thread_id varchar NULL;
+-- Discord channel per event (created from the event page inside a category)
+ALTER TABLE events ADD COLUMN IF NOT EXISTS discord_event_channel_id varchar NULL;
+ALTER TABLE discord_bot_settings ADD COLUMN IF NOT EXISTS event_category_id varchar NULL;
 
 -- iRacing teams added by hand (teams we are not a member of / that no longer exist)
 ALTER TABLE iracing_teams ADD COLUMN IF NOT EXISTS manual boolean NOT NULL DEFAULT false;
@@ -376,7 +379,8 @@ Off for every team until you switch it on, per team.
 ## Step 12. Team leads, Discord threads and the team recap (optional)
 
 - **Team leads:** an admin picks them per event crew, on the crew's plan page under "Per-driver pace & fuel" → **Team lead** (only drivers placed on that crew can be chosen, up to 5). A lead can plan only that crew in that event (stints, planning settings, driver settings, guest drivers, availability, live link). Cars, start times, moving drivers, events and everything under Admin stay admin-only. A lead who is moved off the crew or cancels loses access immediately.
-- **Discord thread:** on a team's stint plan (admin), click **Discord thread**. The bot needs View Channel, Send Messages, Create Public Threads and Send Messages in Threads in the events channel. It uses the existing events channel, bot token and `FRONTEND_URL`.
+- **Discord thread per crew:** on a team's stint plan (admin), click **Discord thread** (one thread per crew, with a stint plan summary). The bot needs View Channel, Send Messages, Create Public Threads and Send Messages in Threads in the events channel. It uses the existing events channel, bot token and `FRONTEND_URL`.
+- **Discord channel per event:** on the event page (admin), click **Discord channel** to create a new text channel for the whole event. First set Admin → Discord Bot → **Event category ID** (right-click the category in Discord → Copy Category ID). The bot additionally needs **Manage Channels** (on the server or on that category). The channel inherits the category permissions and starts with the event details.
 - **Team recap:** the **Recap** page (under Racing, after Results) needs nothing extra. It reads imported results and is cached for 5 minutes.
 
 ## If something goes wrong

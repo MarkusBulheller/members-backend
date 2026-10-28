@@ -20,16 +20,26 @@ describe('DiscordBotSettingsService interactions settings', () => {
   const KEY = 'ab'.repeat(32);
 
   it('reports only whether a public key is set, never the key or the token', async () => {
-    const { service } = makeService({ botToken: 'secret', publicKey: KEY, eventsChannelId: '1', alertUserId: '2', resultsChannelId: '3' });
+    const { service } = makeService({ botToken: 'secret', publicKey: KEY, eventsChannelId: '1', alertUserId: '2', resultsChannelId: '3', eventCategoryId: '4' });
     const view = await service.getSettings();
     expect(view).toEqual({
       hasToken: true,
       eventsChannelId: '1',
       resultsChannelId: '3',
+      eventCategoryId: '4',
       publicKeySet: true,
       alertUserId: '2',
     });
     expect(JSON.stringify(view)).not.toContain(KEY);
+  });
+
+  it('stores, clears and reads back the event category', async () => {
+    const { service, repository } = makeService({ botToken: 'secret', eventsChannelId: null, alertUserId: null });
+    await service.update({ eventCategoryId: '135558244635516998' });
+    expect(repository.update).toHaveBeenLastCalledWith('singleton', { eventCategoryId: '135558244635516998' });
+    await service.update({ eventCategoryId: '' });
+    expect(repository.update).toHaveBeenLastCalledWith('singleton', { eventCategoryId: null });
+    expect(await service.getEventChannelCredentials()).toEqual({ token: 'secret', categoryId: null });
   });
 
   it('stores a new public key lowercased, leaves it alone when blank, and clears the alert user on empty string', async () => {

@@ -7,6 +7,8 @@ import { IracingSeriesService } from '../iracing/iracing-series.service.js';
 import { DiscordBotSettingsService } from './discord-bot-settings.service.js';
 
 const DISCORD_API_BASE = 'https://discord.com/api/v10';
+const CHANNEL_HINT =
+  " Check the bot's permissions: it needs Manage Channels (on the server or on the event category), View Channel and Send Messages.";
 
 /** Message flag enabling the Components V2 layout system — required on every field below;
  * without it Discord expects the classic `content`/`embeds` shape instead.
@@ -239,11 +241,13 @@ export class DiscordBotService {
     }
   }
 
-  private async discordFailure(action: string, response: Response): Promise<BadGatewayException> {
+  private async discordFailure(action: string, response: Response, hintOverride?: string): Promise<BadGatewayException> {
     const detail = await response.text().catch(() => '');
     this.logger.error(`Discord ${action} failed (${response.status}): ${detail}`);
     const hint =
-      response.status === 403
+      hintOverride !== undefined
+        ? hintOverride
+        : response.status === 403
         ? " Check the bot's permissions in the events channel (View Channel, Send Messages, Create Public Threads, Send Messages in Threads)."
         : response.status === 404
           ? ' The channel or message was not found - check the events channel id.'
@@ -291,6 +295,61 @@ export class DiscordBotService {
     if (!thread.id) throw new BadGatewayException('Discord did not return the thread id.');
     if (thread.guild_id) this.guildIdByChannel.set(input.parentChannelId, thread.guild_id);
     return { threadId: thread.id, starterMessageId: message.id };
+  }
+
+  /** The category id for per-event channels from Admin → Discord Bot; throws a clear 400 when unset. */
+  async getEventCategoryId(): Promise<string> {
+    const { categoryId } = await this.discordBotSettingsService.getEventChannelCredentials();
+    if (!categoryId) throw new BadRequestException('Set the event category first (Admin → Discord Bot).');
+    return categoryId;
+  }
+
+  /** Creates a text channel inside the event category and posts `starterContent` in it. The bot needs
+   * Manage Channels (on the server or on that category). Throws a clear error when the category id
+   * is wrong or Discord refuses. A failed first message does not undo the channel: it is logged and
+   * the channel still counts as created. */
+  async createEventChannel(input: {
+    categoryId: string;
+    name: string;
+    topic?: string;
+    starterContent: string;
+  }): Promise<{ channelId: string; guildId: string }> {
+    const token = await this.requireToken();
+
+    const categoryResponse = await this.threadRequest(token, 'GET', `/channels/${input.categoryId}`);
+    if (categoryResponse.status === 404) {
+      throw new BadRequestException('The event category was not found - check the category id (Admin → Discord Bot).');
+    }
+    if (!categoryResponse.ok) throw await this.discordFailure('look up the event category', categoryResponse, CHANNEL_HINT);
+    const category = (await categoryResponse.json()) as { type?: number; guild_id?: string };
+    if (category.type !== 4 || !category.guild_id) {
+      throw new BadRequestException('The event category id is not a category - copy the ID of the category itself.');
+    }
+
+    const channelResponse = await this.threadRequest(token, 'POST', `/guilds/${category.guild_id}/channels`, {
+      name: input.name,
+      type: 0,
+      parent_id: input.categoryId,
+      ...(input.topic ? { topic: input.topic.slice(0, 1024) } : {}),
+    });
+    if (!channelResponse.ok) throw await this.discordFailure('create the channel', channelResponse, CHANNEL_HINT);
+    const channel = (await channelResponse.json()) as { id?: string };
+    if (!channel.id) throw new BadGatewayException('Discord did not return the channel id.');
+    this.guildIdByChannel.set(channel.id, category.guild_id);
+
+    try {
+      const messageResponse = await this.threadRequest(token, 'POST', `/channels/${channel.id}/messages`, {
+        content: input.starterContent,
+        flags: 1 << 2,
+        allowed_mentions: { parse: [] },
+      });
+      if (!messageResponse.ok) {
+        this.logger.warn(`Discord event channel ${channel.id} created but the first message failed (${messageResponse.status})`);
+      }
+    } catch (err) {
+      this.logger.warn(`Discord event channel ${channel.id} created but the first message failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return { channelId: channel.id, guildId: category.guild_id };
   }
 
   /** Adds one user to a thread. Returns false (and logs) on any failure — never throws. */

@@ -98,6 +98,11 @@ export class Event {
   @Column({ name: 'discord_channel_id', type: 'varchar', nullable: true })
   discordChannelId: string | null;
 
+  /** Discord text channel created for the whole event from the event page, inside the configured
+   * event category (see EventChannelService). Null = none yet. */
+  @Column({ name: 'discord_event_channel_id', type: 'varchar', nullable: true })
+  discordEventChannelId: string | null;
+
   /** Links this event to a specific iRacing series-season week (IracingSeriesSeason.seasonId +
    * that season's schedule[].race_week_num) — drives the weather-forecast section on the event
    * detail page. Both null unless explicitly linked; no FK since IracingSeriesSeason rows get

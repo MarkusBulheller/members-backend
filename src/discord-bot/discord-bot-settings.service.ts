@@ -11,6 +11,8 @@ export interface DiscordBotSettingsView {
   hasToken: boolean;
   eventsChannelId: string | null;
   resultsChannelId: string | null;
+  /** Category the per-event channels are created in. */
+  eventCategoryId: string | null;
   /** Whether an interactions public key is stored — never the key itself. */
   publicKeySet: boolean;
   alertUserId: string | null;
@@ -57,6 +59,7 @@ export class DiscordBotSettingsService {
       hasToken: Boolean(settings?.botToken),
       eventsChannelId: settings?.eventsChannelId ?? null,
       resultsChannelId: settings?.resultsChannelId ?? null,
+      eventCategoryId: settings?.eventCategoryId ?? null,
       publicKeySet: Boolean(settings?.publicKey),
       alertUserId: settings?.alertUserId ?? null,
     };
@@ -68,6 +71,7 @@ export class DiscordBotSettingsService {
     if (dto.botToken !== undefined && dto.botToken !== '') patch.botToken = dto.botToken;
     if (dto.eventsChannelId !== undefined) patch.eventsChannelId = dto.eventsChannelId || null;
     if (dto.resultsChannelId !== undefined) patch.resultsChannelId = dto.resultsChannelId || null;
+    if (dto.eventCategoryId !== undefined) patch.eventCategoryId = dto.eventCategoryId || null;
     if (dto.publicKey !== undefined && dto.publicKey !== '') patch.publicKey = dto.publicKey.toLowerCase();
     if (dto.alertUserId !== undefined) patch.alertUserId = dto.alertUserId || null;
     if (Object.keys(patch).length > 0) {
@@ -81,6 +85,13 @@ export class DiscordBotSettingsService {
     await this.ensureRow();
     const settings = await this.loadWithSecrets();
     return { token: settings?.botToken ?? null, channelId: settings?.eventsChannelId ?? null };
+  }
+
+  /** For creating per-event channels: the bot token plus the category they go in. */
+  async getEventChannelCredentials(): Promise<{ token: string | null; categoryId: string | null }> {
+    await this.ensureRow();
+    const settings = await this.loadWithSecrets();
+    return { token: settings?.botToken ?? null, categoryId: settings?.eventCategoryId ?? null };
   }
 
   /** For DiscordBotService.postResultsMessage() — the bot token plus the race-results channel. */

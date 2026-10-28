@@ -22,6 +22,13 @@ export class UpdateDiscordBotSettingsDto {
   @Matches(/^(\d{15,25})?$/, { message: 'resultsChannelId must be a Discord channel ID (15-25 digits)' })
   resultsChannelId?: string;
 
+  /** Category in which per-event channels are created (a Discord snowflake). Empty string clears
+   * it; omitted leaves it untouched. */
+  @IsOptional()
+  @IsString()
+  @Matches(/^(\d{15,25})?$/, { message: 'eventCategoryId must be a Discord category ID (15-25 digits)' })
+  eventCategoryId?: string;
+
   /** Discord application public key — 64 hex chars (a 32-byte Ed25519 key). Blank/omitted leaves
    * the stored key untouched, same as botToken. */
   @IsOptional()

@@ -76,6 +76,8 @@ const EXPECTED: Record<string, Kind> = {
   'EventTeamThreadController.get': 'ADMIN',
   'EventTeamThreadController.ensure': 'ADMIN',
   'EventTeamThreadController.postPlanSummary': 'ADMIN',
+  'EventChannelController.get': 'ADMIN',
+  'EventChannelController.ensure': 'ADMIN',
   'FollowLinkController.get': lead(),
   'FollowLinkController.update': lead(),
   'PublicFollowController.getState': 'PUBLIC',
