@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, UseGuards } from '@nestjs/common';
+import { TeamManage } from '../auth/team-manage.guard.js';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
 import { Roles } from '../common/decorators/roles.decorator.js';
 import { Role } from '../common/enums/role.enum.js';
@@ -31,9 +32,10 @@ export class EventTeamsController {
     return this.eventTeamsService.create(eventId, dto);
   }
 
+  /** Admins may change anything; a team lead may change only the planning settings (not name, car,
+   * iRacing team or timeslot) - enforced by the guard's `restrict: 'team'`. */
   @Patch(':teamId')
-  @UseGuards(RolesGuard)
-  @Roles(Role.ADMIN)
+  @TeamManage({ restrict: 'team' })
   update(
     @Param('eventId') eventId: string,
     @Param('teamId') teamId: string,

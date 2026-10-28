@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Sim } from '../common/enums/sim.enum.js';
 import { Event } from '../events/event.entity.js';
+import { isEventOpenForSignups } from '../events/event-signup-window.js';
 import { IracingSeriesService } from '../iracing/iracing-series.service.js';
 import { DiscordBotSettingsService } from './discord-bot-settings.service.js';
 
@@ -16,6 +17,8 @@ const IS_COMPONENTS_V2 = 1 << 15;
 export interface AnnouncementSignup {
   name: string;
   carClass: string | null;
+  /** A guest driver (no portal account) — listed with a "(guest)" marker. */
+  guest?: boolean;
 }
 
 /** Where an event's announcement message lives, so it can be edited later. */
@@ -31,17 +34,21 @@ const MAX_SIGNUPS_SHOWN = 30;
 
 /** Names come from user-controlled profiles — escape Discord markdown so e.g. an underscore
  * doesn't turn half a name italic. */
-function escapeMarkdown(text: string): string {
+export function escapeMarkdown(text: string): string {
   return text.replace(/([\\*_~`|>])/g, '\\$1');
 }
 
 const ComponentType = {
+  ACTION_ROW: 1,
+  BUTTON: 2,
   SECTION: 9,
   TEXT_DISPLAY: 10,
   THUMBNAIL: 11,
   SEPARATOR: 14,
   CONTAINER: 17,
 } as const;
+
+const ButtonStyle = { SECONDARY: 2, SUCCESS: 3, LINK: 5 } as const;
 
 /** Posts event announcements to the team's Discord server via a bot token (REST API, not a
  * persistent gateway connection — a bot posting occasional messages doesn't need discord.js'
@@ -120,6 +127,255 @@ export class DiscordBotService {
     }
   }
 
+  /** DMs a Discord user (opens the DM channel, then posts). Best-effort: returns false and logs on
+   * any failure (no token, user has DMs closed, outage) — never throws. */
+  async sendDirectMessage(userId: string, content: string): Promise<boolean> {
+    const { token } = await this.discordBotSettingsService.getCredentialsForPosting();
+    if (!token) {
+      this.logger.warn('Discord bot token not configured (see Admin → Discord Bot) — skipping direct message');
+      return false;
+    }
+    try {
+      const headers = { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' };
+      const channelResponse = await fetch(`${DISCORD_API_BASE}/users/@me/channels`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ recipient_id: userId }),
+      });
+      if (!channelResponse.ok) {
+        this.logger.error(`Discord DM channel creation failed (${channelResponse.status}): ${await channelResponse.text()}`);
+        return false;
+      }
+      const channel = (await channelResponse.json()) as { id?: string };
+      if (!channel.id) return false;
+      const messageResponse = await fetch(`${DISCORD_API_BASE}/channels/${channel.id}/messages`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+      });
+      if (!messageResponse.ok) {
+        this.logger.error(`Discord DM failed (${messageResponse.status}): ${await messageResponse.text()}`);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      this.logger.error('Discord DM failed', err instanceof Error ? err.stack : String(err));
+      return false;
+    }
+  }
+
+  /** Posts a plain-text message to the race-results channel (Admin → Discord Bot → results channel).
+   * Best-effort like every other post: returns true only when Discord accepted it; false (and a log
+   * line) when the token/channel isn't configured or Discord refuses — never throws. Mentions are
+   * disabled; callers must escape user-controlled text (series/track names) themselves. */
+  async postResultsMessage(content: string): Promise<boolean> {
+    const { token, channelId } = await this.discordBotSettingsService.getResultsPostingCredentials();
+    if (!token || !channelId) {
+      this.logger.warn('Discord bot token/results channel not configured (see Admin → Discord Bot) — skipping result message');
+      return false;
+    }
+    try {
+      const response = await fetch(`${DISCORD_API_BASE}/channels/${channelId}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+      });
+      if (!response.ok) {
+        this.logger.error(`Discord result message failed (${response.status}): ${await response.text()}`);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      this.logger.error('Discord result message failed', err instanceof Error ? err.stack : String(err));
+      return false;
+    }
+  }
+
+  // ---- Team threads --------------------------------------------------------------------------
+  // Unlike the best-effort posts above, these run on an admin's button press and the admin is
+  // waiting for the outcome, so failures THROW (400 = not configured, 502 = Discord said no) with a
+  // message that is safe to show in the UI.
+
+  private readonly guildIdByChannel = new Map<string, string>();
+
+  /** The events channel id from Admin → Discord Bot; throws a clear 400 when unset. */
+  async getEventsChannelId(): Promise<string> {
+    const { channelId } = await this.discordBotSettingsService.getCredentialsForPosting();
+    if (!channelId) throw new BadRequestException('Set the events channel first (Admin → Discord Bot).');
+    return channelId;
+  }
+
+  private async requireToken(): Promise<string> {
+    const { token } = await this.discordBotSettingsService.getCredentialsForPosting();
+    if (!token) throw new BadRequestException('Set the Discord bot token first (Admin → Discord Bot).');
+    return token;
+  }
+
+  /** One REST call as the bot. A 429 is retried once after Discord's `retry_after` (capped), since
+   * posting several messages in a row can brush the per-channel limit. Network errors become 502. */
+  private async threadRequest(token: string, method: string, path: string, body?: unknown): Promise<Response> {
+    const init = {
+      method,
+      headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    };
+    try {
+      let response = await fetch(`${DISCORD_API_BASE}${path}`, init);
+      if (response.status === 429) {
+        let waitMs = 1000;
+        try {
+          const data = (await response.json()) as { retry_after?: number };
+          if (typeof data.retry_after === 'number') waitMs = data.retry_after * 1000;
+        } catch {
+          // keep the default wait
+        }
+        await new Promise((resolve) => setTimeout(resolve, Math.min(Math.max(waitMs, 0), 5000)));
+        response = await fetch(`${DISCORD_API_BASE}${path}`, init);
+      }
+      return response;
+    } catch (err) {
+      this.logger.error(`Discord request failed (${method} ${path})`, err instanceof Error ? err.stack : String(err));
+      throw new BadGatewayException("Couldn't reach Discord - please try again.");
+    }
+  }
+
+  private async discordFailure(action: string, response: Response): Promise<BadGatewayException> {
+    const detail = await response.text().catch(() => '');
+    this.logger.error(`Discord ${action} failed (${response.status}): ${detail}`);
+    const hint =
+      response.status === 403
+        ? " Check the bot's permissions in the events channel (View Channel, Send Messages, Create Public Threads, Send Messages in Threads)."
+        : response.status === 404
+          ? ' The channel or message was not found - check the events channel id.'
+          : '';
+    return new BadGatewayException(`Discord refused to ${action} (${response.status}).${hint}`);
+  }
+
+  /** Posts `starterContent` in the parent channel, then opens a PUBLIC thread from that message
+   * (auto-archive 7 days). `mentionUserIds` are the only users the starter may ping — never roles
+   * or @everyone. If the thread can't be opened the orphan starter message is deleted again. */
+  async createTeamThread(input: {
+    parentChannelId: string;
+    name: string;
+    starterContent: string;
+    mentionUserIds?: string[];
+  }): Promise<{ threadId: string; starterMessageId: string }> {
+    const token = await this.requireToken();
+    const name = input.name.replace(/\s+/g, ' ').trim().slice(0, 100) || 'Race thread';
+
+    const messageResponse = await this.threadRequest(token, 'POST', `/channels/${input.parentChannelId}/messages`, {
+      content: input.starterContent,
+      // SUPPRESS_EMBEDS: the plan / follow links shouldn't unfurl into big previews.
+      flags: 1 << 2,
+      allowed_mentions: { parse: [], users: (input.mentionUserIds ?? []).slice(0, 100) },
+    });
+    if (!messageResponse.ok) throw await this.discordFailure('post the thread starter message', messageResponse);
+    const message = (await messageResponse.json()) as { id?: string };
+    if (!message.id) throw new BadGatewayException('Discord did not return the starter message id.');
+
+    const threadResponse = await this.threadRequest(
+      token,
+      'POST',
+      `/channels/${input.parentChannelId}/messages/${message.id}/threads`,
+      { name, auto_archive_duration: 10080 },
+    );
+    if (!threadResponse.ok) {
+      const failure = await this.discordFailure('create the thread', threadResponse);
+      // Don't leave a starter message without a thread behind (best effort).
+      await this.threadRequest(token, 'DELETE', `/channels/${input.parentChannelId}/messages/${message.id}`).catch(
+        () => undefined,
+      );
+      throw failure;
+    }
+    const thread = (await threadResponse.json()) as { id?: string; guild_id?: string };
+    if (!thread.id) throw new BadGatewayException('Discord did not return the thread id.');
+    if (thread.guild_id) this.guildIdByChannel.set(input.parentChannelId, thread.guild_id);
+    return { threadId: thread.id, starterMessageId: message.id };
+  }
+
+  /** Adds one user to a thread. Returns false (and logs) on any failure — never throws. */
+  async addThreadMember(threadId: string, userId: string): Promise<boolean> {
+    let token: string;
+    try {
+      token = await this.requireToken();
+    } catch {
+      return false;
+    }
+    return this.putThreadMember(token, threadId, userId);
+  }
+
+  /** Adds many users, one after the other (rate limits). Per-user failures are swallowed; the
+   * counts say how it went. */
+  async addThreadMembers(threadId: string, userIds: string[]): Promise<{ added: number; failed: number }> {
+    let token: string;
+    try {
+      token = await this.requireToken();
+    } catch {
+      return { added: 0, failed: userIds.length };
+    }
+    let added = 0;
+    let failed = 0;
+    for (const userId of userIds) {
+      if (await this.putThreadMember(token, threadId, userId)) added += 1;
+      else failed += 1;
+    }
+    return { added, failed };
+  }
+
+  private async putThreadMember(token: string, threadId: string, userId: string): Promise<boolean> {
+    try {
+      const response = await this.threadRequest(token, 'PUT', `/channels/${threadId}/thread-members/${userId}`);
+      if (!response.ok) {
+        this.logger.warn(`Discord add-thread-member failed (${response.status}) for user ${userId}`);
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Plain-text message inside a thread. Only `mentionUserIds` can be pinged. Throws on failure. */
+  async postThreadMessage(threadId: string, content: string, mentionUserIds: string[] = []): Promise<string> {
+    const token = await this.requireToken();
+    const response = await this.threadRequest(token, 'POST', `/channels/${threadId}/messages`, {
+      content,
+      allowed_mentions: { parse: [], users: mentionUserIds.slice(0, 100) },
+    });
+    if (!response.ok) throw await this.discordFailure('post into the thread', response);
+    const message = (await response.json()) as { id?: string };
+    return message.id ?? '';
+  }
+
+  /** True while the thread exists; false once Discord answers 404 (deleted). Any other failure
+   * throws, so a hiccup is never mistaken for "deleted" (which would create a duplicate thread). */
+  async findThreadExists(threadId: string): Promise<boolean> {
+    const token = await this.requireToken();
+    const response = await this.threadRequest(token, 'GET', `/channels/${threadId}`);
+    if (response.status === 404) return false;
+    if (!response.ok) throw await this.discordFailure('look up the thread', response);
+    return true;
+  }
+
+  /** The server (guild) a channel belongs to, needed for https://discord.com/channels/<guild>/<thread>
+   * links. Cached in memory; null when it can't be determined. Never throws. */
+  async getGuildIdForChannel(channelId: string): Promise<string | null> {
+    const cached = this.guildIdByChannel.get(channelId);
+    if (cached) return cached;
+    try {
+      const { token } = await this.discordBotSettingsService.getCredentialsForPosting();
+      if (!token) return null;
+      const response = await this.threadRequest(token, 'GET', `/channels/${channelId}`);
+      if (!response.ok) return null;
+      const channel = (await response.json()) as { guild_id?: string };
+      if (!channel.guild_id) return null;
+      this.guildIdByChannel.set(channelId, channel.guild_id);
+      return channel.guild_id;
+    } catch {
+      return null;
+    }
+  }
+
   /** Never throws — a weather lookup failure (unsynced season, expired data, etc.) should drop
    * the weather line, not the whole announcement. */
   private async getWeatherSummary(event: Event): Promise<string | null> {
@@ -193,7 +449,10 @@ export class DiscordBotService {
 
     const signupLines = signups
       .slice(0, MAX_SIGNUPS_SHOWN)
-      .map((s) => `• ${escapeMarkdown(s.name)}${s.carClass ? ` — ${escapeMarkdown(s.carClass)}` : ''}`);
+      .map(
+        (s) =>
+          `• ${escapeMarkdown(s.name)}${s.guest ? ' (guest)' : ''}${s.carClass ? ` — ${escapeMarkdown(s.carClass)}` : ''}`,
+      );
     if (signups.length > MAX_SIGNUPS_SHOWN) {
       signupLines.push(`…and ${signups.length - MAX_SIGNUPS_SHOWN} more`);
     }
@@ -209,6 +468,19 @@ export class DiscordBotService {
       { type: ComponentType.SEPARATOR },
       { type: ComponentType.TEXT_DISPLAY, content: `[Sign up on the members site](${eventUrl})` },
     );
+
+    // Buttons only while signups are open; once the event closes, the next refresh simply
+    // rebuilds the post without them.
+    if (isEventOpenForSignups(event)) {
+      containerComponents.push({
+        type: ComponentType.ACTION_ROW,
+        components: [
+          { type: ComponentType.BUTTON, style: ButtonStyle.SUCCESS, label: 'Sign up', custom_id: `sg:${event.id}` },
+          { type: ComponentType.BUTTON, style: ButtonStyle.SECONDARY, label: 'Withdraw', custom_id: `wd:${event.id}` },
+          { type: ComponentType.BUTTON, style: ButtonStyle.LINK, label: 'Set my hours', url: eventUrl },
+        ],
+      });
+    }
 
     return {
       flags: IS_COMPONENTS_V2,

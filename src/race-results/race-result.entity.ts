@@ -12,6 +12,8 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { Car } from '../cars/car.entity.js';
+import { EventTeam } from '../events/event-team.entity.js';
+import { Event } from '../events/event.entity.js';
 import { Track } from '../tracks/track.entity.js';
 import { RaceResultDriverStint } from './race-result-driver-stint.entity.js';
 import { RaceResultLap } from './race-result-lap.entity.js';
@@ -107,6 +109,32 @@ export class RaceResult {
    * link can be revoked independently of the result's normal (login-gated) URL. */
   @Column({ name: 'share_token', type: 'varchar', nullable: true, unique: true })
   shareToken: string | null;
+
+  /** 'MANUAL' = an admin typed in the subsession (POST /race-results); 'AUTO' = imported by the
+   * automatic result import; null = imported before this was recorded. */
+  @Column({ name: 'import_source', type: 'varchar', length: 10, nullable: true })
+  importSource: 'MANUAL' | 'AUTO' | null;
+
+  @Column({ name: 'imported_at', type: 'timestamptz', nullable: true })
+  importedAt: Date | null;
+
+  /** The event / event team this result was matched to after import (ResultEventLinkService);
+   * null when no event matched. Deleting the event or the team just unlinks the result. */
+  @ManyToOne(() => Event, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'event_id' })
+  event?: Relation<Event> | null;
+
+  @Index('idx_race_results_event_id')
+  @Column({ name: 'event_id', type: 'uuid', nullable: true })
+  eventId: string | null;
+
+  @ManyToOne(() => EventTeam, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'event_team_id' })
+  eventTeam?: Relation<EventTeam> | null;
+
+  @Index('idx_race_results_event_team_id')
+  @Column({ name: 'event_team_id', type: 'uuid', nullable: true })
+  eventTeamId: string | null;
 
   @OneToMany(() => RaceResultDriverStint, (stint) => stint.raceResult)
   driverStints: Relation<RaceResultDriverStint>[];

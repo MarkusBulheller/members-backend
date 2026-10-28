@@ -39,6 +39,14 @@ export class CreateEventDto {
   @Max(999)
   tyreLimit?: number | null;
 
+  /** Race-readiness check: drivers each team needs (1-20). Null clears it (back to the default of 4). */
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsInt()
+  @Min(1)
+  @Max(20)
+  minDriversPerTeam?: number | null;
+
   @IsString()
   @MaxLength(150)
   title: string;

@@ -76,15 +76,18 @@ export class EventTeamStintsService {
 
   /** Toggles actualStartAt between "now" (server time) and null — a stint that's running short
    * or long re-anchors every later stint's derived schedule to this real moment. Clicking again
-   * clears it (undo a mis-click, or hand the "current" marker to a different stint). */
+   * clears it (undo a mis-click, or hand the "current" marker to a different stint). With
+   * `restart` always sets it to now instead: the stint that is already running can be started
+   * over (the plan was off, a restart, a red flag) without the toggle clearing its start. */
   async toggleStartNow(
     eventId: string,
     teamId: string,
     stintId: string,
     actorUserId?: string,
+    restart = false,
   ): Promise<EventTeamStint> {
     const stint = await this.findStintOrThrow(eventId, teamId, stintId);
-    stint.actualStartAt = stint.actualStartAt ? null : new Date();
+    stint.actualStartAt = !restart && stint.actualStartAt ? null : new Date();
     const saved = await this.stintsRepository.save(stint);
     this.planEvents?.emit(eventId, teamId, 'stints', actorUserId);
     return saved;
@@ -116,6 +119,38 @@ export class EventTeamStintsService {
       const b = stints[swapIndex];
       [a.order, b.order] = [b.order, a.order];
       await this.stintsRepository.save([a, b]);
+      this.planEvents?.emit(eventId, teamId, 'stints', actorUserId);
+    }
+    return this.listForTeam(eventId, teamId);
+  }
+
+  /** Drag and drop: puts the stint at a 0-based position and shifts the ones in between. The
+   * whole list is renumbered 0..n-1 (only rows whose order changed are written). An index past
+   * the end means "last". */
+  async moveTo(
+    eventId: string,
+    teamId: string,
+    stintId: string,
+    index: number,
+    actorUserId?: string,
+  ): Promise<EventTeamStint[]> {
+    const stints = await this.listForTeam(eventId, teamId);
+    const from = stints.findIndex((s) => s.id === stintId);
+    if (from === -1) {
+      throw new NotFoundException('Stint not found');
+    }
+    const to = Math.min(Math.max(index, 0), stints.length - 1);
+    if (to !== from) {
+      const [moved] = stints.splice(from, 1);
+      stints.splice(to, 0, moved);
+      const changed: EventTeamStint[] = [];
+      stints.forEach((stint, position) => {
+        if (stint.order !== position) {
+          stint.order = position;
+          changed.push(stint);
+        }
+      });
+      await this.stintsRepository.save(changed);
       this.planEvents?.emit(eventId, teamId, 'stints', actorUserId);
     }
     return this.listForTeam(eventId, teamId);

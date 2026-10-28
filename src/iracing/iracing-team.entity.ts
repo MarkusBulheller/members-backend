@@ -22,6 +22,26 @@ export class IracingTeam {
   @Column({ name: 'roster_count', type: 'int' })
   rosterCount: number;
 
+  /** Admin-controlled: not every synced team is ours. Inactive teams are hidden from the default team
+   * list/pickers and never auto-imported. The sync never touches this flag. */
+  @Column({ type: 'boolean', default: true })
+  active: boolean;
+
+  /** Watch this team for new race results (automatic import, see IracingResultAutoImportService).
+   * Off until an admin ticks it; always off for an inactive team. The sync never touches it. */
+  @Column({ name: 'auto_import', type: 'boolean', default: false })
+  autoImport: boolean;
+
+  /** Added by hand by an admin (a team we are not a member of, or one that no longer exists), so
+   * there is no roster and no owner to sync: owner_cust_id and roster_count are 0. A later real
+   * sync of the same team id turns this off again. */
+  @Column({ type: 'boolean', default: false })
+  manual: boolean;
+
+  /** When the auto-import last searched iRacing for this team successfully. */
+  @Column({ name: 'last_checked_at', type: 'timestamptz', nullable: true })
+  lastCheckedAt: Date | null;
+
   @OneToMany(() => IracingTeamMember, (member) => member.team)
   members: Relation<IracingTeamMember>[];
 

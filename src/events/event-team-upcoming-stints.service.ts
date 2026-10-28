@@ -124,7 +124,9 @@ export class EventTeamUpcomingStintsService {
     return assignments.map((assignment) => {
       const team = teamById.get(assignment.teamId);
       const teamStints = stints.filter((s) => s.eventTeamId === assignment.teamId);
-      const startsAtMs = assignment.timeslotStartsAt ? Date.parse(assignment.timeslotStartsAt) : null;
+      // Counted from the green flag (timeslot + race-start offset), like the plan page.
+      const anchor = assignment.raceStartsAt ?? assignment.timeslotStartsAt;
+      const startsAtMs = anchor ? Date.parse(anchor) : null;
       return {
         ...assignment,
         trackName: trackNameByEvent.get(assignment.eventId) ?? null,

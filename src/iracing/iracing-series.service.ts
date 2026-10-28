@@ -75,13 +75,18 @@ export class IracingSeriesService {
    * now-finished season cluttering the list forever. This carries the opt-in forward and archives
    * whatever it's superseding, both keyed on seriesId (stable across a series' seasons, unlike
    * seasonId). */
-  async sync(code: string, codeVerifier: string): Promise<{ synced: number }> {
-    const seasons = await this.iracingService.exchangeCodeForSeriesCatalog(code, codeVerifier);
+  async sync(code: string, codeVerifier: string): Promise<{ synced: number; failed: number; failedSeries: { seriesId: number; name: string }[] }> {
+    const { seasons, failedSeriesIds, failedSeries: failedDetails } = await this.iracingService.exchangeCodeForSeriesCatalog(code, codeVerifier);
     const syncedAt = new Date();
 
-    const incomingSeriesIds = [...new Set(seasons.map((s) => s.seriesId))];
+    // A series whose schedule could not be fetched keeps its stored seasons untouched: "not in
+    // this sync" would otherwise read as "season ended" and archive it and switch its car-usage
+    // tracking off. Only series we actually heard back about may be archived below.
+    const failedSeries = new Set(failedSeriesIds);
+    const syncedSeriesIds = [...new Set(seasons.map((s) => s.seriesId))];
+    const incomingSeriesIds = syncedSeriesIds.filter((id) => !failedSeries.has(id));
     const previouslyTracked = await this.seriesRepository.find({
-      where: { seriesId: In(incomingSeriesIds), trackCarUsage: true },
+      where: { seriesId: In(syncedSeriesIds), trackCarUsage: true },
     });
     const trackedSeriesIds = new Set(previouslyTracked.map((s) => s.seriesId));
 
@@ -107,7 +112,18 @@ export class IracingSeriesService {
         .execute();
     }
 
-    return { synced: entities.length };
+    // Name them for the admin: the series name we already have stored beats the decorated season
+    // name iRacing's list gives.
+    const storedNames = new Map<number, string>();
+    if (failedSeries.size > 0) {
+      const stored = await this.seriesRepository.find({ where: { seriesId: In([...failedSeries]) } });
+      for (const row of stored) if (row.seriesName) storedNames.set(row.seriesId, row.seriesName);
+    }
+    const failedList = [...new Map(failedDetails.map((f) => [f.seriesId, f])).values()]
+      .map((f) => ({ seriesId: f.seriesId, name: storedNames.get(f.seriesId) ?? f.name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    return { synced: entities.length, failed: failedSeries.size, failedSeries: failedList };
   }
 
   /** Fetches the actual hour-by-hour weather forecast for one race week — iRacing links each

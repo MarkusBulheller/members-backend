@@ -1,4 +1,16 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  ParseIntPipe,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
 import { Roles } from '../common/decorators/roles.decorator.js';
 import { Role } from '../common/enums/role.enum.js';
@@ -6,6 +18,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
 import { RolesGuard } from '../common/guards/roles.guard.js';
 import { DriversService } from '../drivers/drivers.service.js';
 import { User } from '../users/user.entity.js';
+import { CreateIracingTeamDto, UpdateIracingTeamDto } from './dto/update-iracing-team.dto.js';
 import { OAuthCallbackDto } from './dto/oauth-callback.dto.js';
 import { IracingCarUsageService } from './iracing-car-usage.service.js';
 import { IracingCarsService } from './iracing-cars.service.js';
@@ -130,11 +143,36 @@ export class IracingController {
     return this.iracingDriverLookupService.searchAsAdmin(user.id, query ?? '');
   }
 
+  /** Active teams only; `?includeInactive=true` also returns deactivated ones (admins only —
+   * ignored for anyone else, though this route is admin-only today). */
   @Get('teams')
   @UseGuards(RolesGuard)
   @Roles(Role.ADMIN)
-  listTeams() {
-    return this.iracingTeamsService.list();
+  listTeams(@Query('includeInactive') includeInactive: string | undefined, @CurrentUser() user: User) {
+    return this.iracingTeamsService.list(includeInactive === 'true' && user.role === Role.ADMIN);
+  }
+
+  /** Adds a team by hand (one we are not in, or that no longer exists). */
+  @Post('teams')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  createTeam(@Body() dto: CreateIracingTeamDto) {
+    return this.iracingTeamsService.createManual(dto);
+  }
+
+  @Delete('teams/:teamId')
+  @HttpCode(204)
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  async removeTeam(@Param('teamId', ParseIntPipe) teamId: number): Promise<void> {
+    await this.iracingTeamsService.removeManual(teamId);
+  }
+
+  @Patch('teams/:teamId')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  updateTeam(@Param('teamId', ParseIntPipe) teamId: number, @Body() dto: UpdateIracingTeamDto) {
+    return this.iracingTeamsService.update(teamId, dto);
   }
 
   @Post('teams/sync')

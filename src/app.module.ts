@@ -10,8 +10,10 @@ import { CarTrackSetupsModule } from './car-track-setups/car-track-setups.module
 import { CarsModule } from './cars/cars.module.js';
 import { AuthGuardsModule } from './common/auth-guards.module.js';
 import { ContactInquiriesModule } from './contact-inquiries/contact-inquiries.module.js';
+import { DiscordInteractionsModule } from './discord-bot/discord-interactions.module.js';
 import { DriversModule } from './drivers/drivers.module.js';
 import { EventsModule } from './events/events.module.js';
+import { IracingAutoImportModule } from './iracing/iracing-auto-import.module.js';
 import { IracingModule } from './iracing/iracing.module.js';
 import { LiveriesModule } from './liveries/liveries.module.js';
 import { RaceResultsModule } from './race-results/race-results.module.js';
@@ -51,12 +53,14 @@ import { UsersModule } from './users/users.module.js';
     DriversModule,
     AchievementsModule,
     EventsModule,
+    DiscordInteractionsModule,
     CarsModule,
     LiveriesModule,
     IracingModule,
     TracksModule,
     CarTrackSetupsModule,
     RaceResultsModule,
+    IracingAutoImportModule,
     StatsModule,
     TeamHighlightsModule,
   ],

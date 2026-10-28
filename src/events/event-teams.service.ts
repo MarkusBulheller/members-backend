@@ -1,12 +1,17 @@
 import { Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { toDecimalString } from '../common/decimal.util.js';
+import { RaceResult } from '../race-results/race-result.entity.js';
 import { CreateEventTeamDto } from './dto/create-event-team.dto.js';
 import { UpdateEventTeamDto } from './dto/update-event-team.dto.js';
 import { EventTeam } from './event-team.entity.js';
 import { EventTimeslot } from './event-timeslot.entity.js';
 import { TeamPlanEventsService } from './team-plan-events.service.js';
+
+/** An event team as returned by the read endpoints: plus the id of its linked race result (the
+ * latest one), null until a result has been matched to it — see ResultEventLinkService. */
+export type EventTeamWithResult = EventTeam & { raceResultId: string | null };
 
 const DECIMAL_FIELD_KEYS = [
   'refuelDurationSeconds',
@@ -30,19 +35,40 @@ export class EventTeamsService {
     @InjectRepository(EventTimeslot)
     private readonly timeslotsRepository: Repository<EventTimeslot>,
     @Optional() private readonly planEvents?: TeamPlanEventsService,
+    @Optional()
+    @InjectRepository(RaceResult)
+    private readonly raceResultsRepository?: Repository<RaceResult>,
   ) {}
 
-  listForEvent(eventId: string): Promise<EventTeam[]> {
-    return this.teamsRepository.find({
+  async listForEvent(eventId: string): Promise<EventTeamWithResult[]> {
+    const teams = await this.teamsRepository.find({
       where: { eventId },
       relations: { dummyDrivers: true },
       order: { createdAt: 'ASC' },
     });
+    return this.withRaceResultIds(teams);
+  }
+
+  /** Adds `raceResultId` (additive) from race_results.event_team_id; when several results are
+   * linked to one team the latest (by session start) wins. */
+  private async withRaceResultIds(teams: EventTeam[]): Promise<EventTeamWithResult[]> {
+    const latestByTeam = new Map<string, string>();
+    if (this.raceResultsRepository && teams.length > 0) {
+      const rows = await this.raceResultsRepository.find({
+        where: { eventTeamId: In(teams.map((team) => team.id)) },
+        select: { id: true, eventTeamId: true, startTime: true, createdAt: true },
+        order: { startTime: { direction: 'DESC', nulls: 'LAST' }, createdAt: 'DESC' },
+      });
+      for (const row of rows) {
+        if (row.eventTeamId && !latestByTeam.has(row.eventTeamId)) latestByTeam.set(row.eventTeamId, row.id);
+      }
+    }
+    return teams.map((team) => Object.assign(team, { raceResultId: latestByTeam.get(team.id) ?? null }));
   }
 
   /** One team of the event with its guest/dummy drivers — the same shape as an element of
    * listForEvent(), without loading the event's other teams. 404 when the team is not in the event. */
-  async findOneForEvent(eventId: string, teamId: string): Promise<EventTeam> {
+  async findOneForEvent(eventId: string, teamId: string): Promise<EventTeamWithResult> {
     const team = await this.teamsRepository.findOne({
       where: { id: teamId, eventId },
       relations: { dummyDrivers: true },
@@ -50,7 +76,8 @@ export class EventTeamsService {
     if (!team) {
       throw new NotFoundException('Team not found');
     }
-    return team;
+    const [withResult] = await this.withRaceResultIds([team]);
+    return withResult;
   }
 
   async create(eventId: string, dto: CreateEventTeamDto): Promise<EventTeam> {

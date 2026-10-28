@@ -101,9 +101,29 @@ export class DriverProfile {
   @Column({ name: 'night_driver', default: false })
   nightDriver: boolean;
 
-  /** Not a column — filled in per request by DriversService.withDiscordUsernameFor() for portal
-   * members (null for manual drivers), and only for the profile's owner and admins. */
+  /** Opt-in: send this member a private Discord message with their personal race summary after a
+   * result they drove in is imported (see RaceSummaryDmService). Only meaningful for portal
+   * members (userId set). */
+  @Column({ name: 'race_summary_dm', type: 'boolean', default: false })
+  raceSummaryDm: boolean;
+
+  /** Discord username (the handle, stored normalised: trimmed, no "@", lower-case) of a MANUALLY
+   * ADDED driver, set by an admin so a guest with no portal account can sign up through Discord.
+   * Unique when set. `select: false` keeps it out of the public roster list and other normal
+   * reads. In responses, DriversService.withDiscordUsernameFor() fills this property per request:
+   * a portal member's handle (users.discord_username) for the profile's owner and admins, a
+   * guest's stored username for admins only, null otherwise. */
+  @Index('uq_driver_profiles_discord_username', { unique: true })
+  @Column({ name: 'discord_username', type: 'varchar', length: 32, nullable: true, select: false })
   discordUsername?: string | null;
+
+  /** SYSTEM-MANAGED binding to a guest's Discord user id (snowflake), filled the first time the
+   * bot sees that Discord user matching `discordUsername` (DriversService.findGuestByDiscordIdentity).
+   * Never admin-editable and never sent to the portal (`select: false`); cleared whenever an admin
+   * changes or clears the username, so the old person's identity can't carry over. Unique when set. */
+  @Index('uq_driver_profiles_discord_id', { unique: true })
+  @Column({ name: 'discord_id', type: 'varchar', length: 20, nullable: true, select: false })
+  discordId: string | null;
 
   @OneToMany(() => AchievementAward, (award) => award.driverProfile)
   awards: Relation<AchievementAward>[];

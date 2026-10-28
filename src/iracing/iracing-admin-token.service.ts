@@ -21,7 +21,24 @@ export class IracingAdminTokenService {
     private readonly iracingService: IracingService,
   ) {}
 
-  async getAccessToken(adminUserId: string): Promise<string> {
+  /** iRacing refresh tokens are single-use and a rejected one gets the admin's link cleared, so two
+   * refreshes racing on the same stored token (the :00 car-usage cron vs. the result auto-import
+   * cron vs. an admin clicking Import) would wipe a perfectly good link. Every token acquisition
+   * therefore goes through this one in-process queue (single backend instance, like the rest of
+   * the schedulers). */
+  private queue: Promise<unknown> = Promise.resolve();
+
+  private serialized<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(task, task);
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  getAccessToken(adminUserId: string): Promise<string> {
+    return this.serialized(() => this.getAccessTokenUnserialized(adminUserId));
+  }
+
+  private async getAccessTokenUnserialized(adminUserId: string): Promise<string> {
     const adminProfile = await this.driversService.findByUserIdWithRefreshToken(adminUserId);
     if (!adminProfile?.iracingRefreshToken) {
       throw new BadRequestException(
@@ -49,7 +66,11 @@ export class IracingAdminTokenService {
    * working refresh token, since the Data API calls involved aren't tied to any one person's
    * identity anyway. Returns null (rather than throwing) if no admin has a usable link, so the
    * caller can just skip this run and log it. */
-  async getSystemAccessToken(): Promise<string | null> {
+  getSystemAccessToken(): Promise<string | null> {
+    return this.serialized(() => this.getSystemAccessTokenUnserialized());
+  }
+
+  private async getSystemAccessTokenUnserialized(): Promise<string | null> {
     const admins = await this.usersRepository.find({ where: { role: Role.ADMIN } });
     for (const admin of admins) {
       const profile = await this.driversService.findByUserIdWithRefreshToken(admin.id);

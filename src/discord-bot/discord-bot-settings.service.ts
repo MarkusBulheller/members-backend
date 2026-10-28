@@ -10,6 +10,10 @@ const SETTINGS_ID = 'singleton';
 export interface DiscordBotSettingsView {
   hasToken: boolean;
   eventsChannelId: string | null;
+  resultsChannelId: string | null;
+  /** Whether an interactions public key is stored — never the key itself. */
+  publicKeySet: boolean;
+  alertUserId: string | null;
 }
 
 @Injectable()
@@ -36,15 +40,26 @@ export class DiscordBotSettingsService {
     );
   }
 
-  /** For the admin settings page — whether a token is set, never the token itself. */
-  async getSettings(): Promise<DiscordBotSettingsView> {
-    await this.ensureRow();
-    const settings = await this.settingsRepository
+  private loadWithSecrets(): Promise<DiscordBotSettings | null> {
+    return this.settingsRepository
       .createQueryBuilder('s')
       .addSelect('s.botToken')
+      .addSelect('s.publicKey')
       .where('s.id = :id', { id: SETTINGS_ID })
       .getOne();
-    return { hasToken: Boolean(settings?.botToken), eventsChannelId: settings?.eventsChannelId ?? null };
+  }
+
+  /** For the admin settings page — whether a token/public key is set, never their values. */
+  async getSettings(): Promise<DiscordBotSettingsView> {
+    await this.ensureRow();
+    const settings = await this.loadWithSecrets();
+    return {
+      hasToken: Boolean(settings?.botToken),
+      eventsChannelId: settings?.eventsChannelId ?? null,
+      resultsChannelId: settings?.resultsChannelId ?? null,
+      publicKeySet: Boolean(settings?.publicKey),
+      alertUserId: settings?.alertUserId ?? null,
+    };
   }
 
   async update(dto: UpdateDiscordBotSettingsDto): Promise<DiscordBotSettingsView> {
@@ -52,6 +67,9 @@ export class DiscordBotSettingsService {
     const patch: Partial<DiscordBotSettings> = {};
     if (dto.botToken !== undefined && dto.botToken !== '') patch.botToken = dto.botToken;
     if (dto.eventsChannelId !== undefined) patch.eventsChannelId = dto.eventsChannelId || null;
+    if (dto.resultsChannelId !== undefined) patch.resultsChannelId = dto.resultsChannelId || null;
+    if (dto.publicKey !== undefined && dto.publicKey !== '') patch.publicKey = dto.publicKey.toLowerCase();
+    if (dto.alertUserId !== undefined) patch.alertUserId = dto.alertUserId || null;
     if (Object.keys(patch).length > 0) {
       await this.settingsRepository.update(SETTINGS_ID, patch);
     }
@@ -61,11 +79,22 @@ export class DiscordBotSettingsService {
   /** For DiscordBotService's own posting call — the one place the raw token is actually needed. */
   async getCredentialsForPosting(): Promise<{ token: string | null; channelId: string | null }> {
     await this.ensureRow();
-    const settings = await this.settingsRepository
-      .createQueryBuilder('s')
-      .addSelect('s.botToken')
-      .where('s.id = :id', { id: SETTINGS_ID })
-      .getOne();
+    const settings = await this.loadWithSecrets();
     return { token: settings?.botToken ?? null, channelId: settings?.eventsChannelId ?? null };
+  }
+
+  /** For DiscordBotService.postResultsMessage() — the bot token plus the race-results channel. */
+  async getResultsPostingCredentials(): Promise<{ token: string | null; channelId: string | null }> {
+    await this.ensureRow();
+    const settings = await this.loadWithSecrets();
+    return { token: settings?.botToken ?? null, channelId: settings?.resultsChannelId ?? null };
+  }
+
+  /** For the interactions endpoint: the stored public key (hex, for the signature check) and the
+   * user who receives "unlinked user" alert DMs. */
+  async getInteractionConfig(): Promise<{ publicKey: string | null; alertUserId: string | null }> {
+    await this.ensureRow();
+    const settings = await this.loadWithSecrets();
+    return { publicKey: settings?.publicKey ?? null, alertUserId: settings?.alertUserId ?? null };
   }
 }

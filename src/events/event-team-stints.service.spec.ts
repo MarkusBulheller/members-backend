@@ -50,3 +50,71 @@ describe('EventTeamStintsService tyre fields', () => {
     expect(stint).toMatchObject({ tyreChange: false, tyresChanged: 0 });
   });
 });
+
+describe('EventTeamStintsService start now / restart', () => {
+  it('toggles: a first call sets the start, a second call clears it', async () => {
+    const set = setup({ id: 's1', actualStartAt: null });
+    expect((await set.service.toggleStartNow('e1', 't1', 's1')).actualStartAt).toBeInstanceOf(Date);
+
+    const clear = setup({ id: 's1', actualStartAt: new Date('2026-10-24T12:00:00Z') });
+    expect((await clear.service.toggleStartNow('e1', 't1', 's1')).actualStartAt).toBeNull();
+  });
+
+  it('restart sets the start to now even when the stint already has one', async () => {
+    const before = Date.now();
+    const { service } = setup({ id: 's1', actualStartAt: new Date('2026-10-24T12:00:00Z') });
+    const stint = await service.toggleStartNow('e1', 't1', 's1', undefined, true);
+    expect(stint.actualStartAt).toBeInstanceOf(Date);
+    expect((stint.actualStartAt as Date).getTime()).toBeGreaterThanOrEqual(before);
+  });
+});
+
+describe('EventTeamStintsService.moveTo (drag and drop)', () => {
+  function withList(orders: number[]) {
+    const rows = orders.map((order, i) => ({ id: `s${i}`, order }));
+    const stintsRepository = {
+      find: vi.fn().mockResolvedValue(rows.map((r) => ({ ...r }))),
+      save: vi.fn((v: unknown) => Promise.resolve(v)),
+    };
+    const teamsRepository = { findOne: vi.fn().mockResolvedValue({ id: 't1', eventId: 'e1' }) };
+    const service = new EventTeamStintsService(stintsRepository as never, teamsRepository as never);
+    return { service, stintsRepository };
+  }
+
+  it('moves a stint down and renumbers only the rows that changed', async () => {
+    const { service, stintsRepository } = withList([0, 1, 2, 3]);
+    await service.moveTo('e1', 't1', 's0', 2);
+    const saved = stintsRepository.save.mock.calls[0][0] as { id: string; order: number }[];
+    expect(Object.fromEntries(saved.map((s) => [s.id, s.order]))).toEqual({ s1: 0, s2: 1, s0: 2 });
+  });
+
+  it('moves a stint up past several others', async () => {
+    const { service, stintsRepository } = withList([0, 1, 2, 3]);
+    await service.moveTo('e1', 't1', 's3', 0);
+    const saved = stintsRepository.save.mock.calls[0][0] as { id: string; order: number }[];
+    expect(Object.fromEntries(saved.map((s) => [s.id, s.order]))).toEqual({ s3: 0, s0: 1, s1: 2, s2: 3 });
+  });
+
+  it('clamps an index past the end to last and does nothing when the position is unchanged', async () => {
+    const last = withList([0, 1, 2]);
+    await last.service.moveTo('e1', 't1', 's0', 99);
+    const saved = last.stintsRepository.save.mock.calls[0][0] as { id: string; order: number }[];
+    expect(Object.fromEntries(saved.map((s) => [s.id, s.order]))).toEqual({ s1: 0, s2: 1, s0: 2 });
+
+    const same = withList([0, 1, 2]);
+    await same.service.moveTo('e1', 't1', 's1', 1);
+    expect(same.stintsRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('heals gaps in the stored order while moving', async () => {
+    const { service, stintsRepository } = withList([0, 5, 9]);
+    await service.moveTo('e1', 't1', 's2', 0);
+    const saved = stintsRepository.save.mock.calls[0][0] as { id: string; order: number }[];
+    expect(Object.fromEntries(saved.map((s) => [s.id, s.order]))).toEqual({ s2: 0, s0: 1, s1: 2 });
+  });
+
+  it('throws for a stint that is not in the team', async () => {
+    const { service } = withList([0, 1]);
+    await expect(service.moveTo('e1', 't1', 'nope', 0)).rejects.toThrow('Stint not found');
+  });
+});

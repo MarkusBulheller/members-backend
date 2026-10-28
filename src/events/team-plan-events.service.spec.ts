@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NotFoundException } from '@nestjs/common';
+import { NEVER } from 'rxjs';
 import { EventStatus } from '../common/enums/event-status.enum.js';
 import { Role } from '../common/enums/role.enum.js';
 import { EventTeamStintsService } from './event-team-stints.service.js';
@@ -141,6 +142,7 @@ describe('TeamPlanStreamController', () => {
       planEvents,
       { findOne: vi.fn().mockResolvedValue(event) } as never,
       { findOne: vi.fn().mockResolvedValue(team) } as never,
+      { connect: vi.fn(() => NEVER) } as never,
     );
     return { controller, sse };
   }

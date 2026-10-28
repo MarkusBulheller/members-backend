@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, Not, Repository } from 'typeorm';
 import { CarsService } from '../cars/cars.service.js';
@@ -8,15 +8,25 @@ import { IracingCarsService } from '../iracing/iracing-cars.service.js';
 import { IracingRaceResultLookupService } from '../iracing/iracing-race-result-lookup.service.js';
 import { IracingTeam } from '../iracing/iracing-team.entity.js';
 import { IracingTracksService } from '../iracing/iracing-tracks.service.js';
-import { IracingRaceResultDriverData } from '../iracing/iracing.service.js';
+import { IracingRaceResultData, IracingRaceResultDriverData } from '../iracing/iracing.service.js';
 import { TracksService } from '../tracks/tracks.service.js';
 import { RaceResultDriverStint } from './race-result-driver-stint.entity.js';
 import { RaceResultLap } from './race-result-lap.entity.js';
 import { RaceResult } from './race-result.entity.js';
+import { RaceSummaryDmService } from './race-summary-dm.service.js';
+import { ResultEventLinkService } from './result-event-link.service.js';
 
 /** A race result as returned by the single-result endpoints: the entity plus the display name of
  * the iRacing team it was imported for (null if that team isn't in the synced team cache). */
 export type RaceResultWithTeam = RaceResult & { teamName: string | null };
+
+/** How an import was triggered. MANUAL runs as a logged-in admin (their own iRacing link supplies
+ * the access token); AUTO is the background import, which passes the access token it already holds. */
+export interface ImportFromIracingOptions {
+  source: 'MANUAL' | 'AUTO';
+  adminUserId?: string;
+  accessToken?: string;
+}
 
 @Injectable()
 export class RaceResultsService {
@@ -35,6 +45,8 @@ export class RaceResultsService {
     private readonly tracksService: TracksService,
     private readonly iracingCarsService: IracingCarsService,
     private readonly iracingTracksService: IracingTracksService,
+    @Optional() private readonly eventLinkService?: ResultEventLinkService,
+    @Optional() private readonly raceSummaryDmService?: RaceSummaryDmService,
   ) {}
 
   /** Only what the anonymous public marketing site's "Recent Results" table needs — no driver
@@ -115,12 +127,30 @@ export class RaceResultsService {
   }
 
   async importFromIracing(adminUserId: string, subsessionId: number, teamId: number): Promise<RaceResultWithTeam> {
+    return this.importWithOptions(subsessionId, teamId, { source: 'MANUAL', adminUserId });
+  }
+
+  /** The import itself, shared by the manual admin flow and the background auto-import. Throws
+   * ConflictException if (subsession, team) is already imported. After saving, the result is
+   * matched to an event (best-effort, never fails the import — see ResultEventLinkService). */
+  async importWithOptions(
+    subsessionId: number,
+    teamId: number,
+    options: ImportFromIracingOptions,
+  ): Promise<RaceResultWithTeam> {
     const existing = await this.raceResultsRepository.findOne({ where: { subsessionId, teamId } });
     if (existing) {
       throw new ConflictException('This result has already been added.');
     }
 
-    const data = await this.lookupService.lookupAsAdmin(adminUserId, subsessionId, teamId);
+    let data: IracingRaceResultData;
+    if (options.accessToken) {
+      data = await this.lookupService.lookupWithToken(options.accessToken, subsessionId, teamId);
+    } else if (options.adminUserId) {
+      data = await this.lookupService.lookupAsAdmin(options.adminUserId, subsessionId, teamId);
+    } else {
+      throw new BadRequestException('An access token or an admin user is required to import a result.');
+    }
 
     // Link (and auto-create if missing) our roster's Car/Track, so results show up on those
     // pages too — see CarsService.ensureExists()/TracksService.ensureExists(). Track name is
@@ -167,6 +197,8 @@ export class RaceResultsService {
       teamIncidents: data.teamIncidents,
       splitNumber: data.splitNumber,
       totalSplits: data.totalSplits,
+      importSource: options.source,
+      importedAt: new Date(),
     });
     const saved = await this.raceResultsRepository.save(raceResult);
 
@@ -218,7 +250,25 @@ export class RaceResultsService {
       await this.lapsRepository.save(laps);
     }
 
-    return this.findByIdOrThrow(saved.id);
+    // Match the result to an event team (and complete the event if every team now has a result).
+    await this.eventLinkService?.linkAndComplete(saved);
+
+    const imported = await this.findByIdOrThrow(saved.id);
+
+    // Opt-in personal race summary DMs: fire-and-forget, never blocks or fails the import.
+    this.sendRaceSummaryDms(imported);
+
+    return imported;
+  }
+
+  /** Not awaited by the import. The DM service catches its own errors; the extra guards keep a
+   * misbehaving (or mocked) dependency from ever turning into an unhandled rejection. */
+  private sendRaceSummaryDms(result: RaceResultWithTeam): void {
+    try {
+      void Promise.resolve(this.raceSummaryDmService?.notifyImported(result)).catch(() => undefined);
+    } catch {
+      // Best effort only.
+    }
   }
 
   async remove(id: string): Promise<void> {

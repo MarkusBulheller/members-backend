@@ -54,4 +54,9 @@ export class UpdateDriverProfileDto {
   @IsOptional()
   @IsBoolean()
   nightDriver?: boolean;
+
+  /** Opt in/out of the personal race summary Discord DM sent after a result import. */
+  @IsOptional()
+  @IsBoolean()
+  raceSummaryDm?: boolean;
 }

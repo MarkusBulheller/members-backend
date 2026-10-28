@@ -106,6 +106,22 @@ export class EventTeam {
   @Column({ name: 'sim_start_time_of_day', type: 'varchar', nullable: true })
   simStartTimeOfDay: string | null;
 
+  /** Secret behind the public "Follow the race" link (GET /public/follow/:token): 32 random bytes,
+   * base64url. Null = the link is off. `select: false` so it never rides along on the ordinary
+   * team reads that every member can call (GET /events/:id/teams) — only FollowLinkService /
+   * FollowStateService read it, by selecting it explicitly. Never logged. */
+  @Index('uq_event_teams_follow_token', { unique: true, where: '"follow_token" IS NOT NULL' })
+  @Column({ name: 'follow_token', type: 'varchar', length: 64, nullable: true, select: false })
+  followToken: string | null;
+
+  /** How driver names appear on the public follow page: 'FULL' | 'FIRST' | 'INITIALS'. */
+  @Column({ name: 'follow_names', type: 'varchar', length: 10, default: 'FULL' })
+  followNames: string;
+
+  /** Discord thread created for this crew's race (see EventTeamThreadService). Null = none yet. */
+  @Column({ name: 'discord_thread_id', type: 'varchar', nullable: true })
+  discordThreadId: string | null;
+
   /** Placeholder / roster-guest drivers on this crew — see EventTeamDummyDriver. Only loaded by
    * EventTeamsService.listForEvent(). */
   @OneToMany(() => EventTeamDummyDriver, (dummy) => dummy.eventTeam)

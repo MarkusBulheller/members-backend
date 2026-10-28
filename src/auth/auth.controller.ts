@@ -7,6 +7,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
 import { User } from '../users/user.entity.js';
 import { UsersService } from '../users/users.service.js';
 import { AuthService } from './auth.service.js';
+import { TeamLeadsService } from './team-leads.service.js';
 import { DiscordService } from './discord.service.js';
 
 @Controller('auth')
@@ -16,6 +17,7 @@ export class AuthController {
     private readonly discordService: DiscordService,
     private readonly usersService: UsersService,
     private readonly configService: ConfigService,
+    private readonly teamLeads: TeamLeadsService,
   ) {}
 
   private get frontendUrl(): string {
@@ -82,8 +84,11 @@ export class AuthController {
 
   @Get('me')
   @UseGuards(JwtAuthGuard)
-  me(@CurrentUser() user: User) {
+  async me(@CurrentUser() user: User) {
     const { tokenVersion: _tokenVersion, ...safeUser } = user;
-    return safeUser;
+    // Additive: ids of the event crews (event_teams) this user currently leads ([] if none) - the
+    // portal uses it to show team-planning controls to team leads.
+    const leadOfEventTeamIds = await this.teamLeads.eventTeamIdsLedBy(user.id);
+    return { ...safeUser, leadOfEventTeamIds };
   }
 }

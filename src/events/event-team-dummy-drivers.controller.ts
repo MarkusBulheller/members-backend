@@ -1,9 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { TeamManage } from '../auth/team-manage.guard.js';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
-import { Roles } from '../common/decorators/roles.decorator.js';
-import { Role } from '../common/enums/role.enum.js';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
-import { RolesGuard } from '../common/guards/roles.guard.js';
 import { User } from '../users/user.entity.js';
 import { CreateEventTeamDummyDriverDto } from './dto/create-event-team-dummy-driver.dto.js';
 import { UpdateEventTeamDummyDriverDto } from './dto/update-event-team-dummy-driver.dto.js';
@@ -20,8 +18,7 @@ export class EventTeamDummyDriversController {
   }
 
   @Post()
-  @UseGuards(RolesGuard)
-  @Roles(Role.ADMIN)
+  @TeamManage()
   create(
     @Param('eventId') eventId: string,
     @Param('teamId') teamId: string,
@@ -32,8 +29,7 @@ export class EventTeamDummyDriversController {
   }
 
   @Patch(':dummyId')
-  @UseGuards(RolesGuard)
-  @Roles(Role.ADMIN)
+  @TeamManage()
   update(
     @Param('eventId') eventId: string,
     @Param('teamId') teamId: string,
@@ -45,8 +41,7 @@ export class EventTeamDummyDriversController {
   }
 
   @Delete(':dummyId')
-  @UseGuards(RolesGuard)
-  @Roles(Role.ADMIN)
+  @TeamManage()
   remove(
     @Param('eventId') eventId: string,
     @Param('teamId') teamId: string,

@@ -7,7 +7,10 @@ import { AppModule } from './app.module.js';
 import { shouldCompress } from './common/compression-filter.js';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    // Discord signs the exact bytes it sends to POST /discord/interactions; the controller needs them.
+    rawBody: true,
+  });
   const configService = app.get(ConfigService);
 
   // gzip JSON etc.; shouldCompress() keeps the live team-plan SSE stream (and any event-stream) uncompressed.

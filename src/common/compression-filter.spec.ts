@@ -31,6 +31,14 @@ describe('shouldCompress', () => {
     expect(shouldCompress(makeReq(`${SSE_URL}/`), makeRes())).toBe(false);
   });
 
+  it('skips the public follow SSE route but not the plain follow state route', () => {
+    const url = '/public/follow/abc_DEF-123456789012345678901234567890123/stream';
+    expect(shouldCompress(makeReq(url), makeRes())).toBe(false);
+    expect(shouldCompress(makeReq(`${url}?x=1`), makeRes())).toBe(false);
+    expect(shouldCompress(makeReq(`${url}/`), makeRes())).toBe(false);
+    expect(shouldCompress(makeReq('/public/follow/abc_DEF-123456789012345678901234567890123'), makeRes('application/json'))).toBe(true);
+  });
+
   it('skips requests that ask for an event stream', () => {
     expect(shouldCompress(makeReq('/other', 'text/event-stream'), makeRes('application/json'))).toBe(false);
   });

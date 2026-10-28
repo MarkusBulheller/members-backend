@@ -1,9 +1,7 @@
 import { Body, Controller, Get, Param, Patch, UseGuards } from '@nestjs/common';
+import { TeamManage } from '../auth/team-manage.guard.js';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
-import { Roles } from '../common/decorators/roles.decorator.js';
-import { Role } from '../common/enums/role.enum.js';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
-import { RolesGuard } from '../common/guards/roles.guard.js';
 import { User } from '../users/user.entity.js';
 import { UpsertEventTeamDriverSettingsDto } from './dto/upsert-event-team-driver-settings.dto.js';
 import { EventTeamDriverSettingsService } from './event-team-driver-settings.service.js';
@@ -19,8 +17,7 @@ export class EventTeamDriverSettingsController {
   }
 
   @Patch(':userId')
-  @UseGuards(RolesGuard)
-  @Roles(Role.ADMIN)
+  @TeamManage()
   upsert(
     @Param('eventId') eventId: string,
     @Param('teamId') teamId: string,

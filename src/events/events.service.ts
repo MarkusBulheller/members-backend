@@ -7,6 +7,7 @@ import {
   type OnModuleDestroy,
   Optional,
 } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Not, Repository } from 'typeorm';
 import { toDecimalString } from '../common/decimal.util.js';
@@ -20,6 +21,7 @@ import { User } from '../users/user.entity.js';
 import { AdminAddSignupDto } from './dto/admin-add-signup.dto.js';
 import { CreateEventDto } from './dto/create-event.dto.js';
 import { SignupDto } from './dto/signup.dto.js';
+import { normalizeTimeslotPreference } from './timeslot-preference.js';
 import { UpdateEventDto } from './dto/update-event.dto.js';
 import { EventSignup } from './event-signup.entity.js';
 import {
@@ -28,6 +30,7 @@ import {
   type ViewerSignupLike,
   withViewerStatus,
 } from './event-viewer-status.js';
+import { EventTeamLead } from './event-team-lead.entity.js';
 import { EventTeam } from './event-team.entity.js';
 import { EventTeamStint } from './event-team-stint.entity.js';
 import { EventTimeslot } from './event-timeslot.entity.js';
@@ -62,6 +65,10 @@ export interface UpcomingStintAssignment {
   teamId: string;
   teamName: string;
   timeslotStartsAt: string | null;
+  /** The green flag: the timeslot start plus the team's race-start offset (practice/qualifying
+   * block). Stint times are counted from here — the plan page does the same. Null without a
+   * timeslot. */
+  raceStartsAt: string | null;
   raceLengthMinutes: number;
   isLive: boolean;
   /** This driver's next stint in the crew's rotation, if one is still ahead of them — null once
@@ -133,7 +140,26 @@ export class EventsService implements OnModuleDestroy {
     private readonly driverProfilesRepository: Repository<DriverProfile>,
     private readonly discordBotService: DiscordBotService,
     @Optional() private readonly planEvents?: TeamPlanEventsService,
+    // Lazy lookup of the guest-signups service (it depends on this service, so it can't be injected).
+    @Optional() private readonly moduleRef?: ModuleRef,
+    @Optional()
+    @InjectRepository(EventTeamLead)
+    private readonly teamLeadsRepository?: Repository<EventTeamLead>,
   ) {}
+
+  /** A driver who leaves a crew (moved off it, cancelled, deleted) stops being its lead. Best
+   * effort: TeamManagePolicy independently denies a lead who is no longer placed on the crew, so a
+   * failure here never grants access, it only leaves a stale row that the policy ignores. */
+  private async dropLead(eventTeamId: string | null, userId: string): Promise<void> {
+    if (!eventTeamId || !this.teamLeadsRepository) return;
+    try {
+      await this.teamLeadsRepository.delete({ eventTeamId, userId });
+    } catch (err) {
+      this.logger.warn(
+        `Removing team lead ${userId} of crew ${eventTeamId} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   /** Every team this driver has at least one stint in, for an event that's live or still to come
    * — used for the dashboard's "you're on the entry list" prominent callout. A driver's own
@@ -162,8 +188,13 @@ export class EventsService implements OnModuleDestroy {
       }
 
       const timeslotStartsAt = team.timeslot?.startsAt ?? null;
-      if (timeslotStartsAt) {
-        const endMs = timeslotStartsAt.getTime() + event.raceLengthMinutes * 60_000;
+      // Stints (and the end of the race) are counted from the green flag, not from the timeslot's
+      // own start: the team's race-start offset covers practice + qualifying ahead of the race.
+      const raceStartMs = timeslotStartsAt
+        ? timeslotStartsAt.getTime() + (parseDecimal(team.raceStartOffsetMinutes) ?? 0) * 60_000
+        : null;
+      if (raceStartMs !== null) {
+        const endMs = raceStartMs + event.raceLengthMinutes * 60_000;
         if (endMs < now) {
           continue; // this crew's race is already fully over
         }
@@ -172,12 +203,12 @@ export class EventsService implements OnModuleDestroy {
       seenTeamIds.add(team.id);
 
       let nextStintStartsAt: Date | null = null;
-      if (timeslotStartsAt) {
+      if (raceStartMs !== null) {
         const teamStints = await this.eventTeamStintsRepository.find({
           where: { eventTeamId: team.id },
           order: { order: 'ASC' },
         });
-        nextStintStartsAt = computeNextStintStart(team, teamStints, userId, timeslotStartsAt.getTime(), now, event.sim);
+        nextStintStartsAt = computeNextStintStart(team, teamStints, userId, raceStartMs, now, event.sim);
       }
 
       assignments.push({
@@ -186,10 +217,9 @@ export class EventsService implements OnModuleDestroy {
         teamId: team.id,
         teamName: team.name,
         timeslotStartsAt: timeslotStartsAt ? timeslotStartsAt.toISOString() : null,
+        raceStartsAt: raceStartMs !== null ? new Date(raceStartMs).toISOString() : null,
         raceLengthMinutes: event.raceLengthMinutes,
-        isLive: timeslotStartsAt
-          ? now >= timeslotStartsAt.getTime() && now < timeslotStartsAt.getTime() + event.raceLengthMinutes * 60_000
-          : false,
+        isLive: raceStartMs !== null ? now >= raceStartMs && now < raceStartMs + event.raceLengthMinutes * 60_000 : false,
         nextStintStartsAt: nextStintStartsAt ? nextStintStartsAt.toISOString() : null,
       });
     }
@@ -244,6 +274,9 @@ export class EventsService implements OnModuleDestroy {
     // event (e.g. tweaking its description) must not re-post.
     if (!wasPublished && result.status === EventStatus.PUBLISHED) {
       void this.announceEvent(result);
+    } else if (result.discordMessageId && (dto.status !== undefined || dto.signupDeadline !== undefined)) {
+      // Status / deadline decide whether the post carries the Sign up buttons — refresh it.
+      this.scheduleAnnouncementRefresh(id);
     }
     return result;
   }
@@ -370,7 +403,7 @@ export class EventsService implements OnModuleDestroy {
    * place later. Best-effort — publishing never waits on or fails because of Discord. */
   private async announceEvent(event: Event): Promise<void> {
     try {
-      const signups = await this.loadAnnouncementSignups(event.id);
+      const signups = await this.loadAnnouncementSignupsWithGuests(event.id);
       const ref = await this.discordBotService.postEventAnnouncement(event, signups);
       if (ref) {
         await this.eventsRepository.update(event.id, {
@@ -402,6 +435,26 @@ export class EventsService implements OnModuleDestroy {
     return signups.map((s) => ({ name: names.get(s.userId) ?? 'Unknown driver', carClass: s.carClass }));
   }
 
+  /** Members' and guests' active signups, guests flagged and listed after the members — what the
+   * Discord post lists. The guest service depends on this one (circular), so it is resolved
+   * lazily; a failure there only drops the guests from the post, never the post itself. */
+  private async loadAnnouncementSignupsWithGuests(eventId: string): Promise<AnnouncementSignup[]> {
+    const members = await this.loadAnnouncementSignups(eventId);
+    if (!this.moduleRef) return members;
+    try {
+      const { EventGuestSignupsService } = await import('./event-guest-signups.service.js');
+      const guestService = this.moduleRef.get(EventGuestSignupsService, { strict: false });
+      const guests = await guestService.findActiveByEvent(eventId);
+      if (guests.length === 0) return members;
+      return [...members, ...guests.map((g) => ({ name: g.driverName, carClass: g.carClass, guest: true }))];
+    } catch (err) {
+      this.logger.warn(
+        `Loading guest signups for the Discord post of event ${eventId} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return members;
+    }
+  }
+
   /** Call after anything that changes who's signed up (or their class). Debounced per event. */
   private scheduleAnnouncementRefresh(eventId: string): void {
     const existing = this.announcementTimers.get(eventId);
@@ -413,13 +466,19 @@ export class EventsService implements OnModuleDestroy {
     this.announcementTimers.set(eventId, timer);
   }
 
+  /** Public entry point for sibling services (e.g. guest signups) whose changes also alter the
+   * Discord post. Same debounce as member signups. */
+  scheduleAnnouncementRefreshFor(eventId: string): void {
+    this.scheduleAnnouncementRefresh(eventId);
+  }
+
   private async refreshAnnouncement(eventId: string): Promise<void> {
     try {
       const event = await this.eventsRepository.findOne({ where: { id: eventId }, relations: EVENT_RELATIONS });
       // Never announced (or published before announcements were tracked): nothing to edit.
       if (!event?.discordMessageId || !event.discordChannelId) return;
 
-      const signups = await this.loadAnnouncementSignups(eventId);
+      const signups = await this.loadAnnouncementSignupsWithGuests(eventId);
       const result = await this.discordBotService.updateEventAnnouncement(
         event,
         { channelId: event.discordChannelId, messageId: event.discordMessageId },
@@ -492,6 +551,9 @@ export class EventsService implements OnModuleDestroy {
       availableHours: dto.availableHours?.map((h) => new Date(h)) ?? [],
       status: SignupStatus.CONFIRMED,
       timeslots: timeslots ?? [],
+      timeslotPreference: dto.timeslotPreference
+        ? normalizeTimeslotPreference(dto.timeslotPreference, timeslots ?? [])
+        : null,
     });
     return this.saveSignup(signup, userId);
   }
@@ -598,6 +660,17 @@ export class EventsService implements OnModuleDestroy {
     if (dto.notes !== undefined) signup.notes = dto.notes;
     if (dto.availableHours !== undefined) signup.availableHours = dto.availableHours.map((h) => new Date(h));
     if (timeslots !== undefined) signup.timeslots = timeslots;
+
+    // The ranking must always be a permutation of the chosen slots: re-normalise whenever the
+    // ranking or the slots change; a signup that was never ranked stays null (chronological).
+    const chosen = timeslots ?? signup.timeslots ?? [];
+    if (dto.timeslotPreference === null) {
+      signup.timeslotPreference = null;
+    } else if (dto.timeslotPreference !== undefined) {
+      signup.timeslotPreference = normalizeTimeslotPreference(dto.timeslotPreference, chosen);
+    } else if (timeslots !== undefined && signup.timeslotPreference) {
+      signup.timeslotPreference = normalizeTimeslotPreference(signup.timeslotPreference, chosen);
+    }
   }
 
   /** Every hour must land inside at least one of the event's timeslot windows — since a driver
@@ -633,6 +706,7 @@ export class EventsService implements OnModuleDestroy {
     const previousTeamId = signup.eventTeamId;
     signup.eventTeamId = eventTeamId;
     const saved = await this.signupsRepository.save(signup);
+    if (previousTeamId && previousTeamId !== eventTeamId) await this.dropLead(previousTeamId, signup.userId);
     // Both crews' plans change: one loses the driver, the other gains them.
     for (const teamId of new Set([previousTeamId, eventTeamId])) {
       if (teamId) this.planEvents?.emit(eventId, teamId, 'drivers', actorUserId);
@@ -648,6 +722,7 @@ export class EventsService implements OnModuleDestroy {
 
     signup.status = SignupStatus.CANCELLED;
     await this.saveSignup(signup, userId);
+    await this.dropLead(signup.eventTeamId, signup.userId);
   }
 
   async adminOverrideSignup(signupId: string, status: SignupStatus, actorUserId?: string): Promise<EventSignup> {
@@ -657,16 +732,20 @@ export class EventsService implements OnModuleDestroy {
     }
 
     signup.status = status;
-    return this.saveSignup(signup, actorUserId);
+    const saved = await this.saveSignup(signup, actorUserId);
+    if (status === SignupStatus.CANCELLED) await this.dropLead(signup.eventTeamId, signup.userId);
+    return saved;
   }
 
   /** Hard delete, unlike cancelSignup/adminOverrideSignup which only flip status — for admins
    * clearing out a signup entirely rather than recording it as cancelled. */
   async deleteSignup(eventId: string, signupId: string, actorUserId?: string): Promise<void> {
+    const existing = await this.signupsRepository.findOne({ where: { id: signupId, eventId } });
     const result = await this.signupsRepository.delete({ id: signupId, eventId });
     if (result.affected === 0) {
       throw new NotFoundException('Signup not found');
     }
+    if (existing) await this.dropLead(existing.eventTeamId, existing.userId);
     this.scheduleAnnouncementRefresh(eventId);
     // The row is gone, so which team it sat on is unknown — nudge every crew of the event.
     this.planEvents?.emit(eventId, ALL_TEAMS, 'drivers', actorUserId);

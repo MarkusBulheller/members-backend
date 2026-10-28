@@ -10,12 +10,12 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'node:crypto';
 import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { AchievementAward } from '../achievements/achievement-award.entity.js';
 import { Role } from '../common/enums/role.enum.js';
 import { User } from '../users/user.entity.js';
 import { AVATARS_UPLOAD_DIR } from './avatar-multer.config.js';
-import { MAX_SUCCESSIVE_STINTS_CAP } from './driver.constants.js';
+import { DISCORD_USERNAME_PATTERN, MAX_SUCCESSIVE_STINTS_CAP, normalizeDiscordUsername } from './driver.constants.js';
 import { DriverProfile } from './driver-profile.entity.js';
 import { CreateManualDriverDto } from './dto/create-manual-driver.dto.js';
 import { UpdateDriverProfileDto } from './dto/update-driver-profile.dto.js';
@@ -62,12 +62,14 @@ export class DriversService {
     }
   }
 
-  /** Adds the member's Discord username to a linked profile's payload (transient field, not a
-   * column). Only the profile's owner and admins get it — other members just don't see the
-   * handle. Manual drivers have no Discord account, so it stays null. */
+  /** Adds the Discord username to a profile's payload (transient per-request value of the
+   * `discordUsername` property). A portal member's handle (users.discord_username) goes to the
+   * profile's owner and admins; a manual driver's stored username (admin-set, `select: false`)
+   * goes to admins only. Everyone else gets nothing / null. The bound Discord id never leaves the
+   * backend. */
   async withDiscordUsernameFor(profile: DriverProfile, viewer: Pick<User, 'id' | 'role'>): Promise<DriverProfile> {
     if (profile.userId === null) {
-      profile.discordUsername = null;
+      profile.discordUsername = viewer.role === Role.ADMIN ? await this.readStoredDiscordUsername(profile.id) : null;
       return profile;
     }
     if (viewer.role !== Role.ADMIN && viewer.id !== profile.userId) {
@@ -76,6 +78,74 @@ export class DriversService {
     const owner = await this.usersRepository.findOne({ where: { id: profile.userId } });
     profile.discordUsername = owner?.discordUsername ?? null;
     return profile;
+  }
+
+  /** A guest's stored username — `select: false`, so read explicitly. */
+  private async readStoredDiscordUsername(profileId: string): Promise<string | null> {
+    const row = await this.driverProfilesRepository
+      .createQueryBuilder('profile')
+      .select('profile.discordUsername', 'discordUsername')
+      .where('profile.id = :id', { id: profileId })
+      .getRawOne<{ discordUsername: string | null }>();
+    return row?.discordUsername ?? null;
+  }
+
+  /** The guest (manual) driver behind a Discord user, for the Discord signup flow:
+   * (a) a manual driver already bound to this Discord id; else
+   * (b) a manual driver with a matching username (case-insensitive) that is not bound yet — it is
+   *     BOUND to this id right here (conditional UPDATE, so concurrent calls can't double-bind and
+   *     a profile bound to someone else is never taken over); else
+   * (c) null. A unique-index clash while binding counts as not found. The bound id is never put
+   * on the returned object. */
+  async findGuestByDiscordIdentity(discordId: string, username: string | null): Promise<DriverProfile | null> {
+    const bound = await this.driverProfilesRepository.findOne({ where: { discordId, userId: IsNull() } });
+    if (bound) return bound;
+
+    const normalized = normalizeDiscordUsername(username ?? '');
+    if (!DISCORD_USERNAME_PATTERN.test(normalized)) return null;
+    const candidate = await this.driverProfilesRepository.findOne({
+      where: { discordUsername: normalized, discordId: IsNull(), userId: IsNull() },
+    });
+    if (!candidate) return null;
+
+    try {
+      const result = await this.driverProfilesRepository.update({ id: candidate.id, discordId: IsNull() }, { discordId });
+      if (!result.affected) return null;
+    } catch (err) {
+      if ((err as { code?: string }).code === '23505') return null;
+      throw err;
+    }
+    return candidate;
+  }
+
+  /** Compatibility wrapper: lookup by Discord id only (no username binding). */
+  findGuestByDiscordId(discordId: string): Promise<DriverProfile | null> {
+    return this.findGuestByDiscordIdentity(discordId, null);
+  }
+
+  private assertValidDiscordUsername(username: string): void {
+    if (!DISCORD_USERNAME_PATTERN.test(username)) {
+      throw new BadRequestException('The Discord username must be 2-32 characters of a-z, 0-9, "_" or "."');
+    }
+  }
+
+  /** A username may belong to only one driver profile AND must not be a portal member's
+   * (members sign up with their own account) — compared case-insensitively on the normalised
+   * value; 409 with a message the admin can act on. */
+  private async ensureDiscordUsernameAvailable(username: string, ownProfileId?: string): Promise<void> {
+    const profile = await this.driverProfilesRepository.findOne({ where: { discordUsername: username } });
+    if (profile && profile.id !== ownProfileId) {
+      throw new ConflictException('This Discord username is already assigned to another driver');
+    }
+    const memberExists = await this.usersRepository
+      .createQueryBuilder('user')
+      .where('LOWER(user.discordUsername) = :username', { username })
+      .getExists();
+    if (memberExists) {
+      throw new ConflictException(
+        'This Discord username belongs to a portal member — they sign up with their own account, not as a guest',
+      );
+    }
   }
 
   /** Idempotent: a user being re-approved after a suspension already has a profile, so this
@@ -92,9 +162,15 @@ export class DriversService {
   /** Admin-added roster entry with no portal login — see the "New Driver" page. `snapshot` is
    * optional since an admin may add a driver by name only, without picking an iRacing match. */
   async createManualDriver(dto: CreateManualDriverDto): Promise<DriverProfile> {
+    const discordUsername = dto.discordUsername ? normalizeDiscordUsername(dto.discordUsername) : null;
+    if (discordUsername) {
+      this.assertValidDiscordUsername(discordUsername);
+      await this.ensureDiscordUsernameAvailable(discordUsername);
+    }
     const profile = this.driverProfilesRepository.create({
       userId: null,
       displayName: dto.displayName,
+      discordUsername,
       country: dto.country ?? null,
       preferredClasses: dto.preferredClasses ?? null,
       timezone: dto.timezone ?? null,
@@ -143,9 +219,25 @@ export class DriversService {
     const profile = await this.findByIdOrThrow(id);
     this.guardIsManualProfile(profile);
     this.assertMaxStintsAllowed(dto.maxSuccessiveStints, profile.maxSuccessiveStints);
+    // Username: validated/duplicate-checked only when it actually changes. A change (or a clear)
+    // also drops the bound Discord id — the previous person's identity must not carry over.
+    let discordUsernameUpdate: { discordUsername: string | null } | undefined;
+    if (dto.discordUsername !== undefined) {
+      const next = dto.discordUsername === null ? null : normalizeDiscordUsername(dto.discordUsername);
+      const current = await this.readStoredDiscordUsername(profile.id);
+      if (next !== current) {
+        if (next) {
+          this.assertValidDiscordUsername(next);
+          await this.ensureDiscordUsernameAvailable(next, profile.id);
+        }
+        await this.driverProfilesRepository.update(profile.id, { discordId: null });
+      }
+      discordUsernameUpdate = { discordUsername: next };
+    }
 
     Object.assign(profile, {
       ...(dto.displayName !== undefined && { displayName: dto.displayName }),
+      ...discordUsernameUpdate,
       ...(dto.country !== undefined && { country: dto.country }),
       ...(dto.preferredClasses !== undefined && { preferredClasses: dto.preferredClasses }),
       ...(dto.timezone !== undefined && { timezone: dto.timezone }),

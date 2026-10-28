@@ -18,6 +18,23 @@ export class DiscordBotSettings {
   @Column({ name: 'events_channel_id', type: 'varchar', nullable: true })
   eventsChannelId: string | null;
 
+  /** Channel that receives race-result messages (new result found / imported). Null = no result
+   * messages are posted. Admin-editable like eventsChannelId. */
+  @Column({ name: 'results_channel_id', type: 'varchar', nullable: true })
+  resultsChannelId: string | null;
+
+  /** The Discord application's public key (64 hex chars) — used to verify the Ed25519 signature
+   * on every request Discord sends to POST /discord/interactions (button clicks etc.). Not a
+   * secret in itself, but stored like the bot token (`select: false`, only reported to the admin
+   * page as a boolean) so it's never echoed around. */
+  @Column({ name: 'public_key', type: 'varchar', nullable: true, select: false })
+  publicKey: string | null;
+
+  /** Discord user id that gets a DM when someone who isn't linked to a driver profile tries to
+   * sign up from Discord. Null = nobody is alerted (the clicker is just told to contact an admin). */
+  @Column({ name: 'alert_user_id', type: 'varchar', nullable: true })
+  alertUserId: string | null;
+
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
 }

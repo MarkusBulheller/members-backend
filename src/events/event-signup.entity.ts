@@ -61,6 +61,12 @@ export class EventSignup {
   })
   timeslots: Relation<EventTimeslot>[];
 
+  /** The driver's preference order over `timeslots` — timeslot ids, most preferred first. Always
+   * a permutation of the signup's chosen timeslots when set (normalised in EventsService, see
+   * normalizeTimeslotPreference). Null = never ranked (legacy rows): treat as chronological. */
+  @Column({ name: 'timeslot_preference', type: 'uuid', array: true, nullable: true })
+  timeslotPreference: string[] | null;
+
   /** Actual wall-clock hours (each the on-the-hour start of a stint, e.g. 18:00) this driver
    * can take a driving stint during the race — distinct from `timeslots`, which are candidate
    * overall start times. Stored as absolute timestamps (not offsets from a start time) so the

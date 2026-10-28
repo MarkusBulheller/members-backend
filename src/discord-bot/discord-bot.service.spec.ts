@@ -113,3 +113,103 @@ describe('DiscordBotService announcement', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('DiscordBotService signup buttons', () => {
+  const okFetch = () => vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'm', channel_id: 'c' }) });
+  const openEvent = { ...event, status: 'PUBLISHED', signupDeadline: null } as unknown as Event;
+  type Body = {
+    components: { components: { type: number; components?: { type: number; style: number; label: string; custom_id?: string; url?: string }[] }[] }[];
+  };
+  const actionRow = (body: Body) => body.components[0].components.find((c) => c.type === 1);
+
+  it('attaches Sign up / Withdraw / Set my hours while the event is open', async () => {
+    const fetchMock = okFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await makeService().postEventAnnouncement(openEvent, []);
+
+    const row = actionRow(JSON.parse(fetchMock.mock.calls[0][1].body))!;
+    expect(row.components).toEqual([
+      { type: 2, style: 3, label: 'Sign up', custom_id: 'sg:ev1' },
+      { type: 2, style: 2, label: 'Withdraw', custom_id: 'wd:ev1' },
+      { type: 2, style: 5, label: 'Set my hours', url: 'http://127.0.0.1:3000/events/ev1' },
+    ]);
+  });
+
+  it('keeps buttons through an edit while open, and drops them once the event closes', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal('fetch', fetchMock);
+    const service = makeService();
+
+    await service.updateEventAnnouncement(openEvent, ref, []);
+    expect(actionRow(JSON.parse(fetchMock.mock.calls[0][1].body))).toBeDefined();
+
+    for (const closed of [
+      { ...openEvent, status: 'SIGNUPS_CLOSED' },
+      { ...openEvent, status: 'CANCELLED' },
+      { ...openEvent, status: 'COMPLETED' },
+      { ...openEvent, signupDeadline: new Date(Date.now() - 60_000) },
+    ]) {
+      fetchMock.mockClear();
+      await service.updateEventAnnouncement(closed as unknown as Event, ref, []);
+      expect(actionRow(JSON.parse(fetchMock.mock.calls[0][1].body))).toBeUndefined();
+    }
+  });
+
+  it('keeps buttons while the signup deadline is still ahead', async () => {
+    const fetchMock = okFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    await makeService().postEventAnnouncement(
+      { ...openEvent, signupDeadline: new Date(Date.now() + 3_600_000) } as unknown as Event,
+      [],
+    );
+    expect(actionRow(JSON.parse(fetchMock.mock.calls[0][1].body))).toBeDefined();
+  });
+
+  it('marks guests in the signup list', async () => {
+    const fetchMock = okFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await makeService().postEventAnnouncement(openEvent, [
+      { name: 'Markus', carClass: 'GT3' },
+      { name: 'Guesty', carClass: 'GT3', guest: true },
+      { name: 'Guest NoClass', carClass: null, guest: true },
+    ]);
+
+    const text = textOf(JSON.parse(fetchMock.mock.calls[0][1].body));
+    expect(text).toContain('**Signed up (3):**\n• Markus — GT3\n• Guesty (guest) — GT3\n• Guest NoClass (guest)');
+  });
+});
+
+describe('DiscordBotService.sendDirectMessage', () => {
+  it('opens the DM channel and posts the message with the bot token', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: 'dm-chan' }) })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(await makeService().sendDirectMessage('555', 'hello')).toBe(true);
+
+    const [channelUrl, channelInit] = fetchMock.mock.calls[0];
+    expect(channelUrl).toBe('https://discord.com/api/v10/users/@me/channels');
+    expect(channelInit.headers.Authorization).toBe('Bot tok');
+    expect(JSON.parse(channelInit.body)).toEqual({ recipient_id: '555' });
+    const [messageUrl, messageInit] = fetchMock.mock.calls[1];
+    expect(messageUrl).toBe('https://discord.com/api/v10/channels/dm-chan/messages');
+    expect(JSON.parse(messageInit.body)).toEqual({ content: 'hello', allowed_mentions: { parse: [] } });
+  });
+
+  it('returns false instead of throwing on Discord errors, closed DMs or a missing token', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403, text: async () => 'Cannot send messages to this user' }));
+    expect(await makeService().sendDirectMessage('555', 'hi')).toBe(false);
+
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
+    expect(await makeService().sendDirectMessage('555', 'hi')).toBe(false);
+
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await makeService({ token: '', channelId: 'c' }).sendDirectMessage('555', 'hi')).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

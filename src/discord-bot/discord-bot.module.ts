@@ -11,6 +11,6 @@ import { DiscordBotService } from './discord-bot.service.js';
   imports: [TypeOrmModule.forFeature([DiscordBotSettings]), IracingModule],
   controllers: [DiscordBotSettingsController],
   providers: [DiscordBotService, DiscordBotSettingsService, DiscordBotStatusService],
-  exports: [DiscordBotService],
+  exports: [DiscordBotService, DiscordBotSettingsService],
 })
 export class DiscordBotModule {}

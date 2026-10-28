@@ -1,6 +1,6 @@
 import { Controller, NotFoundException, Param, ParseUUIDPipe, Sse, UseGuards } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import type { Observable } from 'rxjs';
+import { merge, type Observable } from 'rxjs';
 import { Repository } from 'typeorm';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
 import { EventStatus } from '../common/enums/event-status.enum.js';
@@ -10,6 +10,7 @@ import { User } from '../users/user.entity.js';
 import { EventTeam } from './event-team.entity.js';
 import { Event } from './event.entity.js';
 import { TeamPlanEventsService, type TeamPlanMessageEvent } from './team-plan-events.service.js';
+import { TeamPlanPresenceService } from './team-plan-presence.service.js';
 
 /** Live "the plan changed" feed for the team stint-plan page (Server-Sent Events). Carries only a
  * small change notice; clients refetch the actual data through the normal REST endpoints. */
@@ -22,6 +23,7 @@ export class TeamPlanStreamController {
     private readonly eventsRepository: Repository<Event>,
     @InjectRepository(EventTeam)
     private readonly teamsRepository: Repository<EventTeam>,
+    private readonly presence: TeamPlanPresenceService,
   ) {}
 
   /** Same visibility as the other team GETs plus the event rule from EventsService.findByIdForViewer:
@@ -41,6 +43,11 @@ export class TeamPlanStreamController {
     if (!team) {
       throw new NotFoundException('Team not found');
     }
-    return this.planEvents.sse(eventId, teamId);
+    // Change notices + heartbeat, merged with the named `presence` event. Closing the connection
+    // unsubscribes both, which also unregisters the viewer.
+    return merge(
+      this.planEvents.sse(eventId, teamId),
+      this.presence.connect(eventId, teamId, { userId: user.id, isAdmin: user.role === Role.ADMIN }),
+    );
   }
 }

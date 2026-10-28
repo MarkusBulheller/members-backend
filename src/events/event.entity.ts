@@ -83,6 +83,11 @@ export class Event {
   @Column({ name: 'tyre_limit', type: 'int', nullable: true })
   tyreLimit: number | null;
 
+  /** Race-readiness check: how many real drivers each team needs. Null = use the default (4, see
+   * DEFAULT_MIN_DRIVERS_PER_TEAM in readiness.rules.ts). */
+  @Column({ name: 'min_drivers_per_team', type: 'int', nullable: true })
+  minDriversPerTeam: number | null;
+
   /** The Discord message announcing this event (and where it was posted), so the signup list in
    * it can be edited in place as people sign up or out. Null until announced, or if the message
    * was deleted in Discord. The channel is stored too since the configured events channel can

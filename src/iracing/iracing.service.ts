@@ -3,6 +3,13 @@ import { ConfigService } from '@nestjs/config';
 
 const IRACING_OAUTH_BASE = 'https://oauth.iracing.com/oauth2';
 const IRACING_DATA_BASE = 'https://members-ng.iracing.com/data';
+/** Per attempt, and how many attempts a Data API / S3 link fetch gets (see fetchWithRetry). */
+const DATA_API_TIMEOUT_MS = 15_000;
+const DATA_API_ATTEMPTS = 2;
+/** Series catalog sync: parallel season_schedule requests, and how many failures in a row (after
+ * retries) mean iRacing is down rather than flaky. */
+const SERIES_SYNC_CONCURRENCY = 5;
+const SERIES_SYNC_GIVE_UP_AFTER = 10;
 
 /** Some Data API endpoints (like /car/get) respond with a bare array; others wrap the array in
  * an envelope object under one of a few possible key names. This tries the bare-array case
@@ -103,6 +110,16 @@ interface IracingTrackAssetData {
   folder?: string;
 }
 
+/** What a series catalog sync got back: the seasons it could read, and the series whose season
+ * schedule could not be fetched (iRacing timed out / answered 5xx on every attempt). The sync
+ * must not treat those as "season ended", see IracingSeriesService.sync(). */
+export interface IracingSeriesCatalog {
+  seasons: IracingSeriesSeasonData[];
+  failedSeriesIds: number[];
+  /** The same series with a readable name (season_list's own, or the season name), for display. */
+  failedSeries: { seriesId: number; seasonId: number | null; name: string }[];
+}
+
 export interface IracingSeriesSeasonData {
   seasonId: number;
   seriesId: number;
@@ -119,6 +136,21 @@ export interface IracingSeriesSeasonData {
   /** From /series/assets, keyed by series_id — a path relative to IRACING_IMAGE_BASE_URL, same
    * convention as car/track assets (see IracingSeriesService.withResolvedLogo()). */
   logo: string | null;
+}
+
+/** One row of /results/search_series for a team search. Only subsessionId is guaranteed; the rest
+ * are best-effort reads of fields that are NOT confirmed against a live team search (positions use
+ * the same 0-indexed-in-the-API convention as /results/get). */
+export interface IracingTeamSearchRow {
+  subsessionId: number;
+  startTime: string | null;
+  endTime: string | null;
+  seriesName: string | null;
+  trackName: string | null;
+  carName: string | null;
+  finishingPosition: number | null;
+  finishingPositionInClass: number | null;
+  lapsComplete: number | null;
 }
 
 export interface IracingRaceResultDriverData {
@@ -285,7 +317,7 @@ export class IracingService {
    * specific, same as the car/track catalog syncs (scope "iracing.auth" only). Batches the
    * per-season calls to stay well under iRacing's rate limits — there are usually 60-90 active
    * official seasons at once. */
-  async exchangeCodeForSeriesCatalog(code: string, codeVerifier: string): Promise<IracingSeriesSeasonData[]> {
+  async exchangeCodeForSeriesCatalog(code: string, codeVerifier: string): Promise<IracingSeriesCatalog> {
     const { accessToken } = await this.exchangeCodeForToken(code, codeVerifier);
     const [seasonListRaw, assetsRaw] = await Promise.all([
       this.fetchDataApi<unknown>(accessToken, '/series/season_list'),
@@ -298,21 +330,61 @@ export class IracingService {
     const officialSeasons = seasons.filter((season) => season.official !== false);
     const assets = assetsRaw ?? {};
 
-    const results: IracingSeriesSeasonData[] = [];
-    const chunkSize = 5;
-    for (let i = 0; i < officialSeasons.length; i += chunkSize) {
-      const chunk = officialSeasons.slice(i, i + chunkSize);
-      const chunkResults = await Promise.all(
-        chunk.map((season) => this.fetchSeasonSchedule(accessToken, season, assets)),
-      );
-      results.push(...chunkResults.filter((result): result is IracingSeriesSeasonData => result !== null));
-      if (i + chunkSize < officialSeasons.length) {
-        await new Promise((resolve) => setTimeout(resolve, 300));
-      }
-    }
+    // A small pool of workers rather than fixed batches: a season iRacing never answers for ties
+    // up one worker for its timeouts, not the four others and every batch after it.
+    const seasonsOut: IracingSeriesSeasonData[] = [];
+    const failedSeriesIds: number[] = [];
+    const failedSeries: IracingSeriesCatalog['failedSeries'] = [];
+    const deadline = Date.now() + this.seriesSyncBudgetMs;
+    let next = 0;
+    let failuresInARow = 0;
+    let iracingDown = false;
 
-    return results;
+    const worker = async () => {
+      while (!iracingDown && next < officialSeasons.length) {
+        const season = officialSeasons[next];
+        next += 1;
+        const seriesId = Number(season.series_id);
+        // Out of time: whatever is left counts as "not refreshed", the same as a failed fetch.
+        const result =
+          Date.now() > deadline ? null : await this.fetchSeasonSchedule(accessToken, season, assets);
+        if (result) {
+          failuresInARow = 0;
+          seasonsOut.push(result);
+        } else {
+          failuresInARow += 1;
+          if (Number.isFinite(seriesId)) {
+            failedSeriesIds.push(seriesId);
+            failedSeries.push({
+              seriesId,
+              seasonId: typeof season.season_id === 'number' ? season.season_id : null,
+              name:
+                (typeof season.series_name === 'string' && season.series_name) ||
+                (typeof season.season_name === 'string' && season.season_name) ||
+                `Series ${seriesId}`,
+            });
+          }
+          // This many in a row, even after retries, means iRacing's data API is down, not that a
+          // few schedules are flaky: stop instead of grinding through dozens of doomed requests.
+          if (failuresInARow >= SERIES_SYNC_GIVE_UP_AFTER) iracingDown = true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, this.seriesSyncPauseMs));
+      }
+    };
+    await Promise.all(Array.from({ length: SERIES_SYNC_CONCURRENCY }, worker));
+
+    if (iracingDown) {
+      throw new BadGatewayException(
+        "iRacing's data service isn't answering right now. Nothing was changed — try the sync again in a few minutes.",
+      );
+    }
+    return { seasons: seasonsOut, failedSeriesIds, failedSeries };
   }
+
+  /** Whole-sync time budget and the pause each worker takes between seasons (overridable so specs
+   * don't wait). */
+  protected seriesSyncBudgetMs = 150_000;
+  protected seriesSyncPauseMs = 150;
 
   private async fetchSeasonSchedule(
     accessToken: string,
@@ -616,6 +688,32 @@ export class IracingService {
     startRangeBegin: Date,
     startRangeEnd: Date,
   ): Promise<number[]> {
+    let rows: IracingTeamSearchRow[];
+    try {
+      rows = await this.searchTeamResultRows(accessToken, teamId, startRangeBegin, startRangeEnd);
+    } catch (error) {
+      // Historic behaviour of this method: a failed search call reads as "nothing found".
+      if (error instanceof BadGatewayException) return [];
+      throw error;
+    }
+    return rows.map((r) => r.subsessionId);
+  }
+
+  /** Same search as searchTeamResults(), but returns the interesting fields of every row instead of
+   * only the subsession ids — powers IracingResultAutoImportService, which needs each session's
+   * end_time (to wait for iRacing to finish publishing it) and a few display fields for the
+   * "new result" message without a /results/get call per candidate.
+   *
+   * Throws BadGatewayException when the search call itself fails (so a caller can tell "nothing
+   * found" from "could not ask"). Which row fields exist is NOT verified against a live response
+   * (see IracingTeamSearchRow): every one except subsession_id is read defensively and becomes null
+   * when absent. Note start_range_* filters on the session START time. */
+  async searchTeamResultRows(
+    accessToken: string,
+    teamId: number,
+    startRangeBegin: Date,
+    startRangeEnd: Date,
+  ): Promise<IracingTeamSearchRow[]> {
     const params = new URLSearchParams({
       team_id: String(Math.abs(teamId)),
       start_range_begin: startRangeBegin.toISOString(),
@@ -627,11 +725,30 @@ export class IracingService {
       accessToken,
       `/results/search_series?${params.toString()}`,
     );
-    if (!raw) return [];
+    if (!raw) {
+      throw new BadGatewayException('iRacing result search failed');
+    }
 
     const chunkInfo = raw.data?.chunk_info ?? raw.chunk_info;
     const rows = await this.fetchChunkedRows(chunkInfo);
-    return rows.map((r) => toNullableInt(r.subsession_id)).filter((id): id is number => id !== null);
+    const result: IracingTeamSearchRow[] = [];
+    for (const row of rows) {
+      const subsessionId = toNullableInt(row.subsession_id);
+      if (subsessionId === null) continue;
+      const track = row.track as Record<string, unknown> | undefined;
+      result.push({
+        subsessionId,
+        startTime: typeof row.start_time === 'string' ? row.start_time : null,
+        endTime: typeof row.end_time === 'string' ? row.end_time : null,
+        seriesName: typeof row.series_name === 'string' ? row.series_name : null,
+        trackName: typeof track?.track_name === 'string' ? track.track_name : null,
+        carName: typeof row.car_name === 'string' ? row.car_name : null,
+        finishingPosition: toRacePosition(row.finish_position),
+        finishingPositionInClass: toRacePosition(row.finish_position_in_class),
+        lapsComplete: toNullableInt(row.laps_complete),
+      });
+    }
+    return result;
   }
 
   /** Which car every entry (one per team/driver, not deduplicated) raced in a session's Race — one
@@ -818,12 +935,17 @@ export class IracingService {
    * (unauthenticated, presigned) automatically. Tolerates endpoints that return the payload
    * directly too, in case behavior varies. */
   private async fetchDataApi<T>(accessToken: string, path: string): Promise<T | null> {
-    const response = await fetch(`${IRACING_DATA_BASE}${path}`, {
+    const response = await this.fetchWithRetry(`${IRACING_DATA_BASE}${path}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
 
+    if (!response) {
+      this.logger.warn(`iRacing Data API ${path} did not answer after ${DATA_API_ATTEMPTS} attempts`);
+      return null;
+    }
     if (!response.ok) {
-      const text = await response.text();
+      // Log a short prefix only: a gateway error page is a few KB of HTML.
+      const text = (await response.text()).slice(0, 200);
       this.logger.warn(`iRacing Data API ${path} fetch failed: ${response.status} ${text}`);
       return null;
     }
@@ -834,13 +956,37 @@ export class IracingService {
       return body as T;
     }
 
-    const linkResponse = await fetch(body.link);
-    if (!linkResponse.ok) {
-      this.logger.warn(`iRacing Data API ${path} S3 link fetch failed: ${linkResponse.status}`);
+    const linkResponse = await this.fetchWithRetry(body.link);
+    if (!linkResponse || !linkResponse.ok) {
+      this.logger.warn(`iRacing Data API ${path} S3 link fetch failed: ${linkResponse?.status ?? 'no answer'}`);
       return null;
     }
 
     return linkResponse.json() as Promise<T>;
+  }
+
+  /** Delay before the 2nd and 3rd attempt (multiplied by the attempt number). Overridable so
+   * specs don't wait. */
+  protected retryDelayMs = 1000;
+
+  /** GET with a per-attempt timeout (a connection iRacing never answers must not stall a whole
+   * sync) and up to DATA_API_ATTEMPTS tries on a network error, timeout, 429 or 5xx — these are
+   * routinely transient on iRacing's CloudFront front end. Any other status is returned to the
+   * caller as is; null means every attempt failed to get a usable answer. */
+  private async fetchWithRetry(url: string, init: RequestInit = {}): Promise<Response | null> {
+    for (let attempt = 1; attempt <= DATA_API_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await fetch(url, { ...init, signal: AbortSignal.timeout(DATA_API_TIMEOUT_MS) });
+        const transient = response.status === 429 || response.status >= 500;
+        if (!transient) return response;
+        if (attempt === DATA_API_ATTEMPTS) return null;
+        await response.body?.cancel().catch(() => undefined);
+      } catch {
+        if (attempt === DATA_API_ATTEMPTS) return null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, this.retryDelayMs * attempt));
+    }
+    return null;
   }
 }
 

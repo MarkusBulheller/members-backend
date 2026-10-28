@@ -1,4 +1,4 @@
-import { IsArray, IsDateString, IsOptional, IsString, IsUUID, MaxLength, ValidateIf } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsDateString, IsOptional, IsString, IsUUID, MaxLength, ValidateIf } from 'class-validator';
 
 export class SignupDto {
   /** Undefined = leave unchanged, null = clear, uuid = set — see EventsService.signup(). */
@@ -30,6 +30,16 @@ export class SignupDto {
   @IsArray()
   @IsUUID('4', { each: true })
   timeslotIds?: string[];
+
+  /** Preference order over the chosen start times (timeslot ids, most preferred first). Undefined
+   * = leave unchanged, null = clear (back to chronological), array = set. Normalised server-side
+   * against the signup's chosen timeslots — see normalizeTimeslotPreference(). */
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsArray()
+  @ArrayMaxSize(50)
+  @IsUUID(undefined, { each: true })
+  timeslotPreference?: string[] | null;
 
   /** Actual wall-clock hours (ISO timestamps, on-the-hour) this driver can take a driving
    * stint — see EventSignup.availableHours for why these are absolute, not offsets. Each must

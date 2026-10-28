@@ -50,6 +50,13 @@ import { IracingService } from './iracing.service.js';
     IracingCarUsageService,
     IracingCarUsageSyncService,
   ],
-  exports: [IracingRaceResultLookupService, IracingCarsService, IracingTracksService, IracingSeriesService],
+  exports: [
+    IracingRaceResultLookupService,
+    IracingCarsService,
+    IracingTracksService,
+    IracingSeriesService,
+    IracingService,
+    IracingAdminTokenService,
+  ],
 })
 export class IracingModule {}

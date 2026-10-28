@@ -4,6 +4,8 @@ import type { Request, Response } from 'express';
 /** Matches the live team-plan SSE route (events/:eventId/teams/:teamId/stream), with or without a
  * query string / trailing slash. */
 const SSE_PATH = /\/events\/[^/]+\/teams\/[^/]+\/stream\/?$/;
+/** The public "Follow the race" stream (public/follow/:token/stream). */
+const PUBLIC_FOLLOW_SSE_PATH = /\/public\/follow\/[^/]+\/stream\/?$/;
 
 /** Decides whether a response may be gzipped. Server-Sent Events must never be compressed: the
  * middleware would buffer the stream and the browser would see no live updates. Excluded by
@@ -17,6 +19,6 @@ export function shouldCompress(req: Request, res: Response): boolean {
   const accept = req.headers?.accept;
   if (typeof accept === 'string' && accept.toLowerCase().includes('text/event-stream')) return false;
   const path = (req.originalUrl ?? req.url ?? '').split('?')[0];
-  if (SSE_PATH.test(path)) return false;
+  if (SSE_PATH.test(path) || PUBLIC_FOLLOW_SSE_PATH.test(path)) return false;
   return compression.filter(req, res);
 }

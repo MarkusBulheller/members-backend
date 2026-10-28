@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { TeamManage } from '../auth/team-manage.guard.js';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
 import { Roles } from '../common/decorators/roles.decorator.js';
 import { Role } from '../common/enums/role.enum.js';
@@ -9,8 +10,10 @@ import { AdminAddSignupDto } from './dto/admin-add-signup.dto.js';
 import { AssignSignupTeamDto } from './dto/assign-signup-team.dto.js';
 import { CreateEventDto } from './dto/create-event.dto.js';
 import { OverrideSignupDto } from './dto/override-signup.dto.js';
+import { PlaceGuestSignupTeamDto } from './dto/place-guest-signup-team.dto.js';
 import { SignupDto } from './dto/signup.dto.js';
 import { UpdateEventDto } from './dto/update-event.dto.js';
+import { EventGuestSignupsService } from './event-guest-signups.service.js';
 import { EventTeamUpcomingStintsService } from './event-team-upcoming-stints.service.js';
 import { EventsService } from './events.service.js';
 
@@ -20,6 +23,7 @@ export class EventsController {
   constructor(
     private readonly eventsService: EventsService,
     private readonly upcomingStintsService: EventTeamUpcomingStintsService,
+    private readonly guestSignupsService: EventGuestSignupsService,
   ) {}
 
   @Get()
@@ -34,8 +38,40 @@ export class EventsController {
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string, @CurrentUser() user: User) {
-    return this.eventsService.findByIdForViewer(id, user.role === Role.ADMIN, user.id);
+  async findOne(@Param('id') id: string, @CurrentUser() user: User) {
+    const event = await this.eventsService.findByIdForViewer(id, user.role === Role.ADMIN, user.id);
+    // Additive: active guest signups (drivers without a portal account), for the "Signed up" list.
+    return { ...event, guestSignups: await this.guestSignupsService.listViewsForEvent(id) };
+  }
+
+  @Get(':id/guest-signups')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  listGuestSignups(@Param('id') id: string) {
+    return this.guestSignupsService.listViewsForEvent(id);
+  }
+
+  @Delete(':id/guest-signups/:driverProfileId')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  cancelGuestSignup(
+    @Param('id') id: string,
+    @Param('driverProfileId') driverProfileId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.guestSignupsService.cancel(id, driverProfileId, user.id);
+  }
+
+  @Post(':id/guest-signups/:driverProfileId/team')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  placeGuestSignupOnTeam(
+    @Param('id') id: string,
+    @Param('driverProfileId') driverProfileId: string,
+    @Body() dto: PlaceGuestSignupTeamDto,
+    @CurrentUser() user: User,
+  ) {
+    return this.guestSignupsService.placeOnTeam(id, driverProfileId, dto.eventTeamId, user.id);
   }
 
   @Post()
@@ -83,9 +119,10 @@ export class EventsController {
     return this.eventsService.adminOverrideSignup(signupId, dto.status, user.id);
   }
 
+  /** Admins may edit everything; a lead of the signup's CURRENT team may edit only start times and
+   * availability (`restrict: 'signup'`). */
   @Patch(':id/signups/:signupId/details')
-  @UseGuards(RolesGuard)
-  @Roles(Role.ADMIN)
+  @TeamManage({ from: 'signupParam', restrict: 'signup' })
   updateSignupDetails(
     @Param('id') id: string,
     @Param('signupId') signupId: string,
