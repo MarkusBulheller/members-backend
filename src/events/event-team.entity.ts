@@ -11,6 +11,8 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { EventTeamDummyDriver } from './event-team-dummy-driver.entity.js';
+import type { PublishedPlan } from './follow/published-plan.js';
+import type { PlanBaseline } from './plan-baseline.js';
 import { EventTimeslot } from './event-timeslot.entity.js';
 import { Event } from './event.entity.js';
 
@@ -89,6 +91,17 @@ export class EventTeam {
   @Column({ name: 'fuel_usage_per_lap_liters', type: 'decimal', precision: 5, scale: 3, nullable: true })
   fuelUsagePerLapLiters: string | null;
 
+  /** Planned fuel saving, in percent of every driver's own fuel use per lap (the planner sizes
+   * stints with `usage * (1 - pct/100)`), so a one-stop-fewer strategy can be planned on fuel
+   * saving. Null/0 = no saving. */
+  @Column({ name: 'fuel_save_percent', type: 'decimal', precision: 5, scale: 2, nullable: true })
+  fuelSavePercent: string | null;
+
+  /** Laps' worth of extra fuel the final stint carries on top of the laps to the flag. Null = the
+   * planner's default of 1. */
+  @Column({ name: 'finish_margin_laps', type: 'decimal', precision: 4, scale: 1, nullable: true })
+  finishMarginLaps: string | null;
+
   /** Minutes between the timeslot's own startsAt (when the session/server opens) and the actual
    * green flag — a practice + qualifying block ahead of the race pushes the real start later than
    * the timeslot alone would suggest. The planning page's raceStartMs adds this on top. */
@@ -113,6 +126,32 @@ export class EventTeam {
   @Index('uq_event_teams_follow_token', { unique: true, where: '"follow_token" IS NOT NULL' })
   @Column({ name: 'follow_token', type: 'varchar', length: 64, nullable: true, select: false })
   followToken: string | null;
+
+  /** Secret behind the PRIVATE strategy link: same URL shape as the follow link, but the data
+   * behind it also carries fuel and tyres (see FollowStateService). Separate from followToken so
+   * the public link never exposes strategy. 32 random bytes, base64url. select:false like
+   * followToken; only the link / state services read it, by selecting it explicitly. */
+  @Index('uq_event_teams_strategy_token', { unique: true, where: '"strategy_token" IS NOT NULL' })
+  @Column({ name: 'strategy_token', type: 'varchar', length: 64, nullable: true, select: false })
+  strategyToken: string | null;
+
+  /** The schedule exactly as the plan page computes it (start/end, fuel and tyres per stint),
+   * published by the plan page so the follow page and overlay show what the planner shows — the
+   * server only knows each stint's stored duration, the planner recalculates it live from fuel,
+   * pace and weather. Null until the plan page has published. Not returned by ordinary team reads. */
+  @Column({ name: 'published_plan', type: 'jsonb', nullable: true, select: false })
+  publishedPlan: PublishedPlan | null;
+
+  /** The plan as it was before the race: what "vs plan" is measured against. Saved by the plan page
+   * at the green flag (or by hand) and not moved by later edits. Null until saved. Not returned by
+   * ordinary team reads. */
+  @Column({ name: 'plan_baseline', type: 'jsonb', nullable: true, select: false })
+  planBaseline: PlanBaseline | null;
+
+  /** Race mode: while on, the plan page asks for confirmation before any change to the plan, so an
+   * accidental click in a long race can't reshuffle it. Shared by everyone editing this crew's plan. */
+  @Column({ name: 'race_mode', type: 'boolean', default: false })
+  raceMode: boolean;
 
   /** How driver names appear on the public follow page: 'FULL' | 'FIRST' | 'INITIALS'. */
   @Column({ name: 'follow_names', type: 'varchar', length: 10, default: 'FULL' })

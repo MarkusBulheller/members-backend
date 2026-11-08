@@ -94,6 +94,8 @@ export interface ReadinessDriverSettings {
   lapTimeDrySeconds: string | null;
   lapTimeWetSeconds: string | null;
   fuelUsagePerLapLiters: string | null;
+  /** Replaces the team's planned fuel saving for this driver; null follows the team. */
+  fuelSavePercent: string | null;
 }
 
 export interface ReadinessTeamInput {
@@ -110,6 +112,8 @@ export interface ReadinessTeamInput {
   lapTimeDrySeconds: string | null;
   lapTimeWetSeconds: string | null;
   fuelUsagePerLapLiters: string | null;
+  /** Planned fuel saving in percent; the stint-length check compares against the saved figure. */
+  fuelSavePercent: string | null;
   raceStartOffsetMinutes: string | null;
   formationLapFuelLiters: string | null;
   /** The car's own tank size (decimal string); null when the team has no car or it was not found. */

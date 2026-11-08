@@ -13,6 +13,8 @@ const UNCLAIMED_SLOT_TTL_MS = 10_000;
 interface FollowSignal {
   teamId: string;
   kind: 'changed' | 'revoked';
+  /** Revoked only: just the streams opened with this token end. Without it every stream of the team ends. */
+  token?: string;
 }
 
 /** Live feed behind GET /public/follow/:token/stream. Like the planner's stream it carries no plan
@@ -31,9 +33,10 @@ export class FollowStreamService {
     this.signals.next({ teamId, kind: 'changed' });
   }
 
-  /** The link was turned off or regenerated: every stream open on the team ends with `revoked`. */
-  notifyRevoked(teamId: string): void {
-    this.signals.next({ teamId, kind: 'revoked' });
+  /** A link was turned off or regenerated: the streams open with that token (every stream of the
+   * team when no token is given) end with `revoked`. */
+  notifyRevoked(teamId: string, token?: string): void {
+    this.signals.next({ teamId, kind: 'revoked', token });
   }
 
   openCount(token: string): number {
@@ -80,7 +83,7 @@ export class FollowStreamService {
         map((): TeamPlanMessageEvent => ({ type: 'heartbeat', data: { at: new Date().toISOString() } })),
       );
       const revoked$ = mine.pipe(
-        filter((s) => s.kind === 'revoked'),
+        filter((s) => s.kind === 'revoked' && (s.token === undefined || s.token === token)),
         map((): TeamPlanMessageEvent => ({ data: { revoked: true } })),
       );
       const subscription = merge(changes$, heartbeat$, revoked$)

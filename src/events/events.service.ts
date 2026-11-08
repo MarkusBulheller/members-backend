@@ -15,7 +15,8 @@ import { EventStatus } from '../common/enums/event-status.enum.js';
 import { SignupStatus } from '../common/enums/signup-status.enum.js';
 import type { Sim } from '../common/enums/sim.enum.js';
 import { UserStatus } from '../common/enums/user-status.enum.js';
-import { type AnnouncementSignup, DiscordBotService } from '../discord-bot/discord-bot.service.js';
+import { type AnnouncementRef, type AnnouncementSignup, DiscordBotService } from '../discord-bot/discord-bot.service.js';
+import { EventKind } from '../common/enums/event-kind.enum.js';
 import { DriverProfile } from '../drivers/driver-profile.entity.js';
 import { User } from '../users/user.entity.js';
 import { AdminAddSignupDto } from './dto/admin-add-signup.dto.js';
@@ -404,7 +405,7 @@ export class EventsService implements OnModuleDestroy {
   private async announceEvent(event: Event): Promise<void> {
     try {
       const signups = await this.loadAnnouncementSignupsWithGuests(event.id);
-      const ref = await this.discordBotService.postEventAnnouncement(event, signups);
+      const ref = await this.postSignupAnnouncement(event, signups);
       if (ref) {
         await this.eventsRepository.update(event.id, {
           discordChannelId: ref.channelId,
@@ -414,6 +415,19 @@ export class EventsService implements OnModuleDestroy {
     } catch (err) {
       this.logger.warn(`Announcing event ${event.id} failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  /** A SPECIAL event's sign-up goes to the events channel. A WEEKLY series event gets its own discussion
+   * channel (made in the event category, like the Discord channel button) and the sign-up is posted in it
+   * and pinned. A weekly event never falls back to the events channel: without an event category (or when
+   * the channel can't be made) it gets no sign-up post and the reason is logged. */
+  private async postSignupAnnouncement(event: Event, signups: AnnouncementSignup[]): Promise<AnnouncementRef | null> {
+    if (event.kind !== EventKind.WEEKLY) return this.discordBotService.postEventAnnouncement(event, signups);
+    if (!this.moduleRef) return null;
+    const { EventChannelService } = await import('./event-channel.service.js');
+    const channelId = await this.moduleRef.get(EventChannelService, { strict: false }).channelIdForAnnouncement(event.id);
+    if (!channelId) return null;
+    return this.discordBotService.postEventAnnouncement(event, signups, { channelId, pin: true });
   }
 
   /** Active (non-cancelled) signups in sign-up order, with each driver's display name — what the

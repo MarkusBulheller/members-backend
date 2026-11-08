@@ -11,7 +11,7 @@ import { ATTEMPT_STATUSES } from './dto/list-result-attempts-query.dto.js';
 import { IracingAdminTokenService } from './iracing-admin-token.service.js';
 import { AutoImportRunStatus } from './iracing-auto-import-settings.entity.js';
 import { IracingAutoImportSettingsService } from './iracing-auto-import-settings.service.js';
-import { buildFoundMessage, buildImportedMessage } from './iracing-auto-import.messages.js';
+import { buildFoundMessage, buildImportedEmbed, buildImportedMessage } from './iracing-auto-import.messages.js';
 import { IracingResultAttempt, ResultAttemptStatus } from './iracing-result-attempt.entity.js';
 import { IracingTeam } from './iracing-team.entity.js';
 import { IracingService, IracingTeamSearchRow } from './iracing.service.js';
@@ -28,6 +28,8 @@ export const CHECK_OVERLAP_MS = 2 * 60 * 60 * 1000;
  * range we'd otherwise ask for, so the search reaches this far back and rows are then filtered
  * locally by end_time. */
 export const SEARCH_LOOKBACK_MS = 36 * 60 * 60 * 1000;
+/** Results where fewer different drivers raced for the team are not picked up (solo entries). */
+export const MIN_TEAM_DRIVERS = 2;
 /** "iRacing link is gone" alert DMs are rate-limited to one per this interval. */
 export const TOKEN_ALERT_INTERVAL_MS = 12 * 60 * 60 * 1000;
 /** Max "new result available" Discord posts per run (a flood guard after the channel is first set up). */
@@ -282,18 +284,26 @@ export class IracingResultAutoImportService {
         this.applyRow(attempt, row);
         await this.attemptsRepository.save(attempt);
       } else {
+        // The search row doesn't say how many drivers the team had, so ask /results/get. A failure
+        // throws: the team's check is then not marked done and this session is looked at again.
+        const driverCount = await this.iracingService.fetchTeamDriverCount(accessToken, subsessionId, team.teamId);
+        const tooFewDrivers = driverCount < MIN_TEAM_DRIVERS;
         const fresh = this.attemptsRepository.create({
           subsessionId,
           teamId: team.teamId,
-          status: 'FOUND',
+          // Kept as IGNORED (not skipped) so it isn't looked up again every run; an admin can still
+          // import it by hand from the auto-import page.
+          status: tooFewDrivers ? 'IGNORED' : 'FOUND',
           tries: 0,
-          lastError: null,
+          lastError: tooFewDrivers
+            ? `Skipped: ${driverCount} driver${driverCount === 1 ? '' : 's'} (auto-import needs at least ${MIN_TEAM_DRIVERS}).`
+            : null,
           raceResultId: null,
           announcedAt: null,
         });
         this.applyRow(fresh, row);
         await this.attemptsRepository.save(fresh);
-        created += 1;
+        if (!tooFewDrivers) created += 1;
       }
     }
     return created;
@@ -327,7 +337,10 @@ export class IracingResultAutoImportService {
       attempt.raceResultId = result.id;
       attempt.lastError = null;
       await this.attemptsRepository.save(attempt);
-      await this.discordBotService.postResultsMessage(buildImportedMessage(result, this.frontendUrl()));
+      await this.discordBotService.postResultsMessage(
+        buildImportedMessage(result, this.frontendUrl()),
+        buildImportedEmbed(result, this.frontendUrl()),
+      );
       return { ok: true, result };
     } catch (error) {
       if (error instanceof ConflictException) {

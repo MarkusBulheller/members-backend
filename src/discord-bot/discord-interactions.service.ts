@@ -193,7 +193,7 @@ export class DiscordInteractionsService {
 
     const key = this.draftKey(user.id, event.id);
     const draft = this.getDraft(key);
-    if (!draft) return this.respond('update', 'This form timed out — tap **Sign up** on the event post to start again.');
+    if (!draft) return this.respond('update', 'This form timed out — tap **Sign up in Discord** on the event post to start again.');
 
     if (action === 'st') {
       draft.slotIds = values;
@@ -210,7 +210,7 @@ export class DiscordInteractionsService {
   private async confirm(event: Event, user: DiscordInteractionUser): Promise<DiscordInteractionResponse> {
     const key = this.draftKey(user.id, event.id);
     const draft = this.getDraft(key);
-    if (!draft) return this.respond('update', 'This form timed out — tap **Sign up** on the event post to start again.');
+    if (!draft) return this.respond('update', 'This form timed out — tap **Sign up in Discord** on the event post to start again.');
     if (!isEventOpenForSignups(event)) {
       this.drafts.delete(key);
       return this.closed('update', event);
@@ -253,7 +253,7 @@ export class DiscordInteractionsService {
     const picks = ordered.map((slot, i) => `${ordinal(i + 1)} ${formatSlotLabel(slot.startsAt)}`).join(', ');
     const hoursNote = draft.keepsHours
       ? ' Your exact stint hours were kept.'
-      : " Your hours are set to 'any stint' — tap **Set my hours** on the event post to give exact availability.";
+      : " Your hours are set to 'any stint' — set your exact hours on the web app.";
     return this.respond(
       'update',
       `✅ You're signed up for **${escapeMarkdown(event.title)}**: ${picks}${carClass ? ` · ${escapeMarkdown(carClass)}` : ''}.${hoursNote}`,

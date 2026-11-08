@@ -97,4 +97,43 @@ describe('Discord announcement refresh on signup changes', () => {
 
     expect(eventsRepository.update).toHaveBeenCalledWith('ev1', { discordChannelId: 'c-new', discordMessageId: 'm-new' });
   });
+
+  it('puts a weekly series sign-up pinned in its own event channel, created when it is published', async () => {
+    const { service, eventsRepository, discord } = makeService();
+    const channelIdForAnnouncement = vi.fn().mockResolvedValue('own-chan');
+    (service as unknown as { moduleRef: unknown }).moduleRef = { get: () => ({ channelIdForAnnouncement }) };
+    discord.postEventAnnouncement.mockResolvedValue({ channelId: 'own-chan', messageId: 'm-pinned' });
+
+    await service['announceEvent']({ id: 'ev2', kind: 'WEEKLY' } as never);
+
+    expect(channelIdForAnnouncement).toHaveBeenCalledWith('ev2');
+    expect(discord.postEventAnnouncement).toHaveBeenCalledTimes(1);
+    expect(discord.postEventAnnouncement.mock.calls[0][2]).toEqual({ channelId: 'own-chan', pin: true });
+    expect(eventsRepository.update).toHaveBeenCalledWith('ev2', { discordChannelId: 'own-chan', discordMessageId: 'm-pinned' });
+  });
+
+  it('posts nothing for a weekly event whose channel could not be made, and never uses the events channel', async () => {
+    const { service, eventsRepository, discord } = makeService();
+    (service as unknown as { moduleRef: unknown }).moduleRef = {
+      get: () => ({ channelIdForAnnouncement: vi.fn().mockResolvedValue(null) }),
+    };
+
+    await service['announceEvent']({ id: 'ev2', kind: 'WEEKLY' } as never);
+
+    expect(discord.postEventAnnouncement).not.toHaveBeenCalled();
+    expect(eventsRepository.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps posting a special event in the events channel, unpinned and without making a channel', async () => {
+    const { service, eventsRepository, discord } = makeService();
+    const channelIdForAnnouncement = vi.fn();
+    (service as unknown as { moduleRef: unknown }).moduleRef = { get: () => ({ channelIdForAnnouncement }) };
+    discord.postEventAnnouncement.mockResolvedValue({ channelId: 'events-chan', messageId: 'm' });
+
+    await service['announceEvent']({ id: 'ev3', kind: 'SPECIAL' } as never);
+
+    expect(channelIdForAnnouncement).not.toHaveBeenCalled();
+    expect(discord.postEventAnnouncement.mock.calls[0]).toHaveLength(2);
+    expect(eventsRepository.update).toHaveBeenCalledWith('ev3', { discordChannelId: 'events-chan', discordMessageId: 'm' });
+  });
 });

@@ -24,6 +24,8 @@ const DECIMAL_FIELD_KEYS = [
   'raceStartOffsetMinutes',
   'formationLapFuelLiters',
   'fuelTankCapacityLiters',
+  'fuelSavePercent',
+  'finishMarginLaps',
 ] as const;
 type DecimalFieldKey = (typeof DECIMAL_FIELD_KEYS)[number];
 
@@ -102,6 +104,7 @@ export class EventTeamsService {
     if (dto.iracingTeamId !== undefined) team.iracingTeamId = dto.iracingTeamId;
     if (dto.timeslotId !== undefined) team.timeslotId = dto.timeslotId;
     if (dto.simStartTimeOfDay !== undefined) team.simStartTimeOfDay = dto.simStartTimeOfDay;
+    if (dto.raceMode !== undefined) team.raceMode = dto.raceMode;
     Object.assign(team, this.decimalFields(dto));
     const saved = await this.teamsRepository.save(team);
     this.planEvents?.emit(eventId, teamId, 'team', actorUserId);

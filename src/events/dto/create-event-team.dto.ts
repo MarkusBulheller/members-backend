@@ -1,4 +1,4 @@
-import { IsInt, IsNumber, IsOptional, IsString, IsUUID, Matches, Min, MaxLength, ValidateIf } from 'class-validator';
+import { IsBoolean, IsInt, IsNumber, IsOptional, IsString, IsUUID, Matches, Max, Min, MaxLength, ValidateIf } from 'class-validator';
 
 export class CreateEventTeamDto {
   @IsString()
@@ -64,6 +64,22 @@ export class CreateEventTeamDto {
   @Min(0)
   fuelUsagePerLapLiters?: number | null;
 
+  /** Planned fuel saving in percent of fuel use per lap (0-50). */
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsNumber()
+  @Min(0)
+  @Max(50)
+  fuelSavePercent?: number | null;
+
+  /** Extra laps of fuel the final stint carries on top of the laps to the flag (0-10). */
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsNumber()
+  @Min(0)
+  @Max(10)
+  finishMarginLaps?: number | null;
+
   /** Minutes of practice + qualifying ahead of the green flag, added on top of the timeslot's own
    * startsAt to get the actual race start. */
   @IsOptional()
@@ -86,6 +102,11 @@ export class CreateEventTeamDto {
   @IsNumber()
   @Min(0)
   fuelTankCapacityLiters?: number | null;
+
+  /** Race mode: the plan page asks for confirmation before changing the plan. */
+  @IsOptional()
+  @IsBoolean()
+  raceMode?: boolean;
 
   /** In-game clock time this crew's first stint starts at, "HH:MM" (24h). */
   @IsOptional()

@@ -23,6 +23,31 @@ describe('DiscordBotService.postResultsMessage', () => {
     expect(JSON.parse(init.body)).toEqual({ content: 'hello @everyone', allowed_mentions: { parse: [] } });
   });
 
+  it('posts the embed instead of the text when one is given', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '' });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const ok = await makeService({ token: 'tok', channelId: '555' }).postResultsMessage('fallback text', { title: 'T', color: 1 });
+
+    expect(ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ embeds: [{ title: 'T', color: 1 }], allowed_mentions: { parse: [] } });
+  });
+
+  it('falls back to the plain text when Discord refuses the embed', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 400, text: async () => 'Invalid Form Body' })
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const ok = await makeService({ token: 'tok', channelId: '555' }).postResultsMessage('fallback text', { title: 'T' });
+
+    expect(ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ content: 'fallback text', allowed_mentions: { parse: [] } });
+  });
+
   it('posts nothing when the token or results channel is not configured', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);

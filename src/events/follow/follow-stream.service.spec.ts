@@ -82,6 +82,20 @@ describe('FollowStreamService', () => {
     expect(service.openCount(TOKEN)).toBe(0);
   });
 
+  it('a revocation of one token only ends the streams opened with that token', () => {
+    const OTHER = 'OTHERtokenOTHERtokenOTHERtoken-_0123456789';
+    const mine = connect();
+    const other = connect(OTHER);
+    service.notifyRevoked('t1', OTHER);
+    expect(other.isCompleted()).toBe(true);
+    expect(other.messages).toEqual([{ data: { revoked: true } }]);
+    expect(mine.isCompleted()).toBe(false);
+    expect(mine.messages).toEqual([]);
+    // without a token every stream of the team ends
+    service.notifyRevoked('t1');
+    expect(mine.isCompleted()).toBe(true);
+  });
+
   it('a revocation of another team does not touch this stream', () => {
     const conn = connect();
     service.notifyRevoked('t2');

@@ -39,6 +39,7 @@ export class EventTeamDriverSettingsService {
     if (dto.fuelUsagePerLapLiters !== undefined) {
       settings.fuelUsagePerLapLiters = toDecimalString(dto.fuelUsagePerLapLiters) ?? null;
     }
+    if (dto.fuelSavePercent !== undefined) settings.fuelSavePercent = toDecimalString(dto.fuelSavePercent) ?? null;
     const saved = await this.settingsRepository.save(settings);
     this.planEvents?.emit(eventId, teamId, 'drivers', actorUserId);
     return saved;

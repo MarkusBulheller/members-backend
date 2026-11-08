@@ -26,6 +26,37 @@ function extractArray(raw: unknown, candidateKeys: string[]): Record<string, unk
   return [];
 }
 
+/** Picks the Race session and one team's entry out of a /results/get response. Throws NotFound
+ * when either is missing. */
+function findTeamRaceEntry(
+  raw: Record<string, unknown>,
+  teamId: number,
+): { raceSession: Record<string, unknown>; teamResult: Record<string, unknown> } {
+  const sessionResultsArr = extractArray(raw, ['session_results']);
+
+  // Confirmed live: simsession_name comes back fully uppercase ("PRACTICE"/"QUALIFY"/"RACE"),
+  // not the "Race" capitalization used elsewhere on iRacing's site — match case-insensitively
+  // rather than relying on session ordering (multi-race/heat formats may not put Race last).
+  const raceSession =
+    sessionResultsArr.find((s) => typeof s.simsession_name === 'string' && s.simsession_name.toUpperCase() === 'RACE') ??
+    sessionResultsArr[sessionResultsArr.length - 1];
+  if (!raceSession) {
+    throw new NotFoundException('No race session found for that session ID.');
+  }
+
+  const results = extractArray(raceSession, ['results']);
+
+  // iRacing represents team entries with a *negative* team_id (teams share the cust_id
+  // namespace with real members, distinguished by sign) — confirmed live: a team whose
+  // website/URL id is 287336 came back as team_id: -287336. Comparing by absolute value lets
+  // an admin enter the id exactly as shown on iRacing's own site, sign and all.
+  const teamResult = results.find((r) => Math.abs(Number(r.team_id)) === Math.abs(teamId));
+  if (!teamResult) {
+    throw new NotFoundException('No result found for that team in this session.');
+  }
+  return { raceSession, teamResult };
+}
+
 interface IracingTokenResponse {
   access_token: string;
   token_type: string;
@@ -526,6 +557,25 @@ export class IracingService {
     return map;
   }
 
+  /** How many different drivers raced for the team in a session's Race — one /results/get call and
+   * nothing else (no member snapshots or lap data), so the auto-import can cheaply skip solo
+   * entries before doing a full import. Throws if the session can't be fetched or has no entry for
+   * the team. */
+  async fetchTeamDriverCount(accessToken: string, subsessionId: number, teamId: number): Promise<number> {
+    const raw = await this.fetchDataApi<Record<string, unknown>>(
+      accessToken,
+      `/results/get?subsession_id=${subsessionId}`,
+    );
+    if (!raw) {
+      throw new NotFoundException('Could not fetch that session from iRacing — check the session ID.');
+    }
+    const { teamResult } = findTeamRaceEntry(raw, teamId);
+    const custIds = extractArray(teamResult, ['driver_results'])
+      .map((d) => Number(d.cust_id))
+      .filter((id) => Number.isFinite(id));
+    return new Set(custIds).size;
+  }
+
   /** Pulls one team's result out of a completed session (/results/get?subsession_id=X) — the
    * response covers every team/driver in every session (practice/qualify/race), so this picks
    * the Race session specifically, then the one team entry matching teamId, then that team's
@@ -544,28 +594,7 @@ export class IracingService {
       throw new NotFoundException('Could not fetch that session from iRacing — check the session ID.');
     }
 
-    const sessionResultsArr = extractArray(raw, ['session_results']);
-
-    // Confirmed live: simsession_name comes back fully uppercase ("PRACTICE"/"QUALIFY"/"RACE"),
-    // not the "Race" capitalization used elsewhere on iRacing's site — match case-insensitively
-    // rather than relying on session ordering (multi-race/heat formats may not put Race last).
-    const raceSession =
-      sessionResultsArr.find((s) => typeof s.simsession_name === 'string' && s.simsession_name.toUpperCase() === 'RACE') ??
-      sessionResultsArr[sessionResultsArr.length - 1];
-    if (!raceSession) {
-      throw new NotFoundException('No race session found for that session ID.');
-    }
-
-    const results = extractArray(raceSession, ['results']);
-
-    // iRacing represents team entries with a *negative* team_id (teams share the cust_id
-    // namespace with real members, distinguished by sign) — confirmed live: a team whose
-    // website/URL id is 287336 came back as team_id: -287336. Comparing by absolute value lets
-    // an admin enter the id exactly as shown on iRacing's own site, sign and all.
-    const teamResult = results.find((r) => Math.abs(Number(r.team_id)) === Math.abs(teamId));
-    if (!teamResult) {
-      throw new NotFoundException('No result found for that team in this session.');
-    }
+    const { raceSession, teamResult } = findTeamRaceEntry(raw, teamId);
 
     const track = raw.track as Record<string, unknown> | undefined;
     const raceSummary = raw.race_summary as Record<string, unknown> | undefined;

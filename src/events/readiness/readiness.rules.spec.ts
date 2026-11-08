@@ -59,6 +59,7 @@ function goodTeam(id = 't1', name = 'Team One'): ReadinessTeamInput {
     lapTimeDrySeconds: '100',
     lapTimeWetSeconds: '108',
     fuelUsagePerLapLiters: '3',
+    fuelSavePercent: null,
     raceStartOffsetMinutes: null,
     formationLapFuelLiters: '0',
     carTankCapacityLiters: '100',
@@ -371,10 +372,37 @@ describe('team.stint-fuel', () => {
 
   it('uses the driver own fuel figure when set', () => {
     const thirsty = evaluate((i) =>
-      i.teams[0].driverSettings.push({ userId: 'u2', lapTimeDrySeconds: null, lapTimeWetSeconds: null, fuelUsagePerLapLiters: '4' }),
+      i.teams[0].driverSettings.push({ userId: 'u2', lapTimeDrySeconds: null, lapTimeWetSeconds: null, fuelUsagePerLapLiters: '4', fuelSavePercent: null }),
     );
     // 100 / 4 = 25 laps * 100 s = 41.7 min < the planned 55
     expect(teamCheck(thirsty, 'team.stint-fuel').status).toBe('FAIL');
+  });
+
+  it('sizes the tank check on the planned fuel saving', () => {
+    // 3 L/lap, 100 L: 33 laps * 100 s = 55 min fits the planned 55 only barely; a 20% higher use
+    // (4 L) fails, but saving 25% of that (3 L/lap) passes again.
+    const thirsty = (save: string | null) =>
+      evaluate((i) => {
+        i.teams[0].driverSettings.push({ userId: 'u2', lapTimeDrySeconds: null, lapTimeWetSeconds: null, fuelUsagePerLapLiters: '4', fuelSavePercent: null });
+        i.teams[0].fuelSavePercent = save;
+      });
+    expect(teamCheck(thirsty(null), 'team.stint-fuel').status).toBe('FAIL');
+    expect(teamCheck(thirsty('25'), 'team.stint-fuel').status).toBe('PASS');
+  });
+
+  it('lets a driver own fuel saving replace the team one', () => {
+    // Team saves 25% (4 L -> 3 L fits), but u2 can't save at all (0%): 4 L/lap does not fit.
+    const driverCannotSave = evaluate((i) => {
+      i.teams[0].fuelSavePercent = '25';
+      i.teams[0].driverSettings.push({
+        userId: 'u2',
+        lapTimeDrySeconds: null,
+        lapTimeWetSeconds: null,
+        fuelUsagePerLapLiters: '4',
+        fuelSavePercent: '0',
+      });
+    });
+    expect(teamCheck(driverCannotSave, 'team.stint-fuel').status).toBe('FAIL');
   });
 
   it('the first stint loses the formation lap fuel', () => {

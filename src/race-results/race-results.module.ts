@@ -15,6 +15,8 @@ import { RaceResultDriverStint } from './race-result-driver-stint.entity.js';
 import { RaceResultLap } from './race-result-lap.entity.js';
 import { RaceResult } from './race-result.entity.js';
 import { PublicRaceResultsController } from './public-race-results.controller.js';
+import { RaceReportController } from './race-report.controller.js';
+import { RaceReportService } from './race-report.service.js';
 import { RaceResultsController } from './race-results.controller.js';
 import { RaceResultsService } from './race-results.service.js';
 import { RaceSummaryDmService } from './race-summary-dm.service.js';
@@ -30,8 +32,8 @@ import { ResultEventLinkService } from './result-event-link.service.js';
     EventsModule,
     DiscordBotModule,
   ],
-  controllers: [RaceResultsController, PublicRaceResultsController],
-  providers: [RaceResultsService, ResultEventLinkService, RaceSummaryDmService],
+  controllers: [RaceResultsController, RaceReportController, PublicRaceResultsController],
+  providers: [RaceResultsService, ResultEventLinkService, RaceSummaryDmService, RaceReportService],
   exports: [RaceResultsService],
 })
 export class RaceResultsModule {}

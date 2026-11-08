@@ -10,20 +10,35 @@ import { EventTeamStint } from '../event-team-stint.entity.js';
 import { EventTeam } from '../event-team.entity.js';
 import { buildStintSlots } from '../event-team-upcoming-stints.service.js';
 import { Event } from '../event.entity.js';
+import { driftSecondsAgainst } from '../plan-baseline.js';
 import { formatFollowName } from './follow-names.js';
 
-/** The ONLY data the public follow page / OBS overlay ever receives. Anything added here is
- * published to anonymous visitors — keep it to who drives when plus the race clock. */
+/** What the private strategy link adds on top of the public data. Only ever sent for a strategy
+ * token, never for the public follow token. */
+export interface FollowStrategy {
+  /** One entry per stint, in stint order. */
+  stints: { number: number; fuelLiters: number | null; tyres: number | null }[];
+  /** Seconds the latest started stint began after (+) or before (-) the ORIGINAL plan (the saved
+   * baseline), i.e. the time lost so far; null without a baseline or a started stint. */
+  driftSeconds: number | null;
+}
+
+/** The data the follow page / OBS overlay receive. For the PUBLIC token it is only who drives when
+ * plus the race clock (anyone with the link, rivals included, can read it) — anything added outside
+ * `strategy` is published to anonymous visitors. Fuel and tyres go in `strategy`, which is present
+ * only for the private strategy token. */
 export interface FollowState {
   /** ISO, so clients can correct for a wrong local clock. */
   serverNow: string;
   event: { title: string; trackName: string; sim: 'IRACING' | 'LMU'; startsAt: string };
-  team: { name: string; carName: string | null };
+  /** simStartTimeOfDay: the in-game clock time ("HH:MM") at the green flag, for the sim-time readout. */
+  team: { name: string; carName: string | null; simStartTimeOfDay: string | null };
   /** startsAt = timeslot start + raceStartOffsetMinutes (null when the team has no timeslot);
    * endsAt = startsAt + lengthMinutes. */
   race: { startsAt: string | null; endsAt: string | null; lengthMinutes: number };
   stints: { number: number; driverName: string | null; startsAt: string | null; endsAt: string | null; started: boolean }[];
   stintCount: number;
+  strategy?: FollowStrategy;
 }
 
 /** Where a follow token points; what the SSE controller needs. */
@@ -72,12 +87,14 @@ export class FollowStateService {
   }
 
   async getState(token: string): Promise<FollowState> {
-    const { team, event } = await this.load(token);
+    const { team, event, level } = await this.load(token);
 
-    const [stints, dummies, car] = await Promise.all([
+    const [stints, dummies, car, planRow] = await Promise.all([
       this.stintsRepository.find({ where: { eventTeamId: team.id }, order: { order: 'ASC' } }),
       this.dummiesRepository.find({ where: { eventTeamId: team.id } }),
       team.carId ? this.carsRepository.findOne({ where: { id: team.carId }, select: { id: true, name: true } }) : null,
+      // select:false column, so ask for it.
+      this.teamsRepository.findOne({ where: { id: team.id }, select: { id: true, publishedPlan: true, planBaseline: true } }),
     ]);
     const driverUserIds = [...new Set(stints.flatMap((s) => (s.driverUserId ? [s.driverUserId] : [])))];
     const profiles =
@@ -98,10 +115,28 @@ export class FollowStateService {
 
     // The cascade starts at the green flag (timeslot + offset), exactly like the readiness rules
     // and the planner, so the first stint begins when the race does.
-    const slots =
+    const cascade =
       raceStartMs !== null
         ? buildStintSlots(team, stints, raceStartMs, '', (id) => formatFollowName(names.get(id), team.followNames), event.sim as Sim)
         : null;
+
+    // The plan page publishes the schedule it computed (the planner recalculates stint lengths live
+    // from fuel, pace and weather; the stored durations behind the cascade can differ). It only
+    // counts while it covers exactly the team's current stints, in order.
+    const published = planRow?.publishedPlan ?? null;
+    const plan =
+      published !== null &&
+      published.stints.length === stints.length &&
+      published.stints.every((published, index) => published.id === stints[index].id)
+        ? published
+        : null;
+    const slots = cascade
+      ? cascade.map((slot, index) => ({
+          ...slot,
+          startsAt: plan ? plan.stints[index].startsAt : slot.startsAt,
+          endsAt: plan ? plan.stints[index].endsAt : slot.endsAt,
+        }))
+      : null;
 
     return {
       serverNow: new Date().toISOString(),
@@ -111,7 +146,7 @@ export class FollowStateService {
         sim: event.sim,
         startsAt: event.startsAt.toISOString(),
       },
-      team: { name: team.name, carName: car?.name ?? null },
+      team: { name: team.name, carName: car?.name ?? null, simStartTimeOfDay: team.simStartTimeOfDay ?? null },
       race: {
         startsAt: raceStartMs !== null ? new Date(raceStartMs).toISOString() : null,
         endsAt: raceStartMs !== null ? new Date(raceStartMs + lengthMinutes * 60_000).toISOString() : null,
@@ -129,15 +164,35 @@ export class FollowStateService {
         started: stint.actualStartAt !== null,
       })),
       stintCount: stints.length,
+      // Only for the private strategy token — and only once the plan page has published a plan that
+      // still matches the stints.
+      ...(level === 'strategy' && plan
+        ? {
+            strategy: {
+              stints: plan.stints.map((stint, index) => ({
+                number: index + 1,
+                fuelLiters: stint.fuelLiters,
+                tyres: stint.tyres,
+              })),
+              driftSeconds: driftSecondsAgainst(stints, planRow?.planBaseline ?? null),
+            },
+          }
+        : {}),
     };
   }
 
-  private async load(token: string): Promise<{ team: EventTeam; event: Event }> {
+  /** Public token first, then the private strategy token. `level` says which one matched. */
+  private async load(token: string): Promise<{ team: EventTeam; event: Event; level: 'public' | 'strategy' }> {
     if (!TOKEN_PATTERN.test(token)) throw notFound();
-    const team = await this.teamsRepository.findOne({ where: { followToken: token }, relations: { timeslot: true } });
+    let level: 'public' | 'strategy' = 'public';
+    let team = await this.teamsRepository.findOne({ where: { followToken: token }, relations: { timeslot: true } });
+    if (!team) {
+      level = 'strategy';
+      team = await this.teamsRepository.findOne({ where: { strategyToken: token }, relations: { timeslot: true } });
+    }
     if (!team) throw notFound();
     const event = await this.eventsRepository.findOne({ where: { id: team.eventId }, relations: { track: true } });
     if (!event || event.status === EventStatus.DRAFT || event.status === EventStatus.CANCELLED) throw notFound();
-    return { team, event };
+    return { team, event, level };
   }
 }

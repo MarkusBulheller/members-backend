@@ -1,4 +1,4 @@
-import { IsNumber, IsOptional, Min, ValidateIf } from 'class-validator';
+import { IsNumber, IsOptional, Max, Min, ValidateIf } from 'class-validator';
 
 export class UpsertEventTeamDriverSettingsDto {
   @IsOptional()
@@ -18,4 +18,12 @@ export class UpsertEventTeamDriverSettingsDto {
   @IsNumber()
   @Min(0)
   fuelUsagePerLapLiters?: number | null;
+
+  /** Overrides the team's planned fuel saving for this driver (0-50 percent); null follows the team. */
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsNumber()
+  @Min(0)
+  @Max(50)
+  fuelSavePercent?: number | null;
 }

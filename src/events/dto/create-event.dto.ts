@@ -15,9 +15,15 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { EventStatus } from '../../common/enums/event-status.enum.js';
+import { EventKind } from '../../common/enums/event-kind.enum.js';
 import { Sim } from '../../common/enums/sim.enum.js';
 
 export class CreateEventDto {
+  /** Omitted = SPECIAL (the column default on create, unchanged on update). */
+  @IsOptional()
+  @IsEnum(EventKind)
+  kind?: EventKind;
+
   /** Omitted = IRACING (the column default on create, unchanged on update). */
   @IsOptional()
   @IsEnum(Sim)

@@ -114,15 +114,30 @@ export class EventChannelService {
   }
 
   /** Idempotent: a live channel is returned untouched; otherwise one is created. */
-  ensureChannel(eventId: string, actorUserId: string): Promise<EventChannelResult> {
+  ensureChannel(eventId: string, actorUserId: string, options: { starter?: boolean } = {}): Promise<EventChannelResult> {
     const pending = this.inflight.get(eventId);
     if (pending) return pending;
-    const run = this.doEnsureChannel(eventId, actorUserId).finally(() => this.inflight.delete(eventId));
+    const run = this.doEnsureChannel(eventId, actorUserId, options.starter !== false).finally(() => this.inflight.delete(eventId));
     this.inflight.set(eventId, run);
     return run;
   }
 
-  private async doEnsureChannel(eventId: string, actorUserId: string): Promise<EventChannelResult> {
+  /** The channel for a weekly series event's sign-up post: the event's own channel, created in the event
+   * category when there is none yet. It starts empty: the sign-up post (which already says everything the
+   * details message would) is its first message. Null when there is no event category or Discord refuses;
+   * the reason is logged. Never throws. */
+  async channelIdForAnnouncement(eventId: string): Promise<string | null> {
+    try {
+      return (await this.ensureChannel(eventId, 'system', { starter: false })).channelId;
+    } catch (err) {
+      this.logger.warn(
+        `No Discord channel for the sign-up of event ${eventId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  private async doEnsureChannel(eventId: string, actorUserId: string, withStarter: boolean): Promise<EventChannelResult> {
     const event = await this.loadEvent(eventId);
     if (event.discordEventChannelId && (await this.discordBot.findThreadExists(event.discordEventChannelId))) {
       return {
@@ -147,7 +162,9 @@ export class EventChannelService {
       categoryId,
       name: buildEventChannelName(event.title),
       topic: buildEventChannelTopic(trackName, event.raceLengthMinutes, eventUrl),
-      starterContent: buildEventStarterMessage({
+      starterContent: !withStarter
+        ? undefined
+        : buildEventStarterMessage({
         title: event.title,
         sim: event.sim,
         trackName,

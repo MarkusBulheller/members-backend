@@ -15,6 +15,21 @@ const CHANNEL_HINT =
  * https://docs.discord.com/developers/components/reference */
 const IS_COMPONENTS_V2 = 1 << 15;
 
+/** The parts of a Discord embed the result posts use
+ * (https://docs.discord.com/developers/resources/message#embed-object). Limits: title 256, description
+ * 4096, 25 fields (name 256, value 1024), 6000 characters in total — the builders keep within them. */
+export interface DiscordEmbed {
+  title?: string;
+  description?: string;
+  url?: string;
+  /** RGB as a number, e.g. 0xe10600. */
+  color?: number;
+  fields?: { name: string; value: string; inline?: boolean }[];
+  footer?: { text: string };
+  /** ISO 8601. */
+  timestamp?: string;
+}
+
 /** Who's signed up, as shown in the announcement — names are resolved by the caller. */
 export interface AnnouncementSignup {
   name: string;
@@ -70,8 +85,15 @@ export class DiscordBotService {
   /** Best-effort: a missing bot config or a Discord outage must never block publishing an event,
    * so every failure is logged rather than thrown — callers should fire this without awaiting a
    * meaningful result (or awaiting at all). */
-  async postEventAnnouncement(event: Event, signups: AnnouncementSignup[]): Promise<AnnouncementRef | null> {
-    const { token, channelId } = await this.discordBotSettingsService.getCredentialsForPosting();
+  async postEventAnnouncement(
+    event: Event,
+    signups: AnnouncementSignup[],
+    options: { channelId?: string; pin?: boolean } = {},
+  ): Promise<AnnouncementRef | null> {
+    const credentials = await this.discordBotSettingsService.getCredentialsForPosting();
+    const token = credentials.token;
+    // An explicit channel (a weekly series event's own channel) wins over the events channel.
+    const channelId = options.channelId ?? credentials.channelId;
     if (!token || !channelId) {
       this.logger.warn('Discord bot token/events channel not configured (see Admin → Discord Bot) — skipping event announcement');
       return null;
@@ -89,10 +111,34 @@ export class DiscordBotService {
         return null;
       }
       const message = (await response.json()) as { id?: string; channel_id?: string };
-      return message.id ? { channelId: message.channel_id ?? channelId, messageId: message.id } : null;
+      if (!message.id) return null;
+      const ref = { channelId: message.channel_id ?? channelId, messageId: message.id };
+      if (options.pin) await this.pinMessage(token, ref.channelId, ref.messageId);
+      return ref;
     } catch (err) {
       this.logger.error('Discord announcement failed', err instanceof Error ? err.stack : String(err));
       return null;
+    }
+  }
+
+  /** Pins a message. Best-effort: a missing permission (the bot needs Manage Messages / Pin Messages in
+   * the channel) is logged and the message simply stays unpinned. Never throws. */
+  private async pinMessage(token: string, channelId: string, messageId: string): Promise<boolean> {
+    try {
+      const response = await fetch(`${DISCORD_API_BASE}/channels/${channelId}/pins/${messageId}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bot ${token}` },
+      });
+      if (!response.ok) {
+        this.logger.warn(
+          `Pinning the sign-up post failed (${response.status}): the bot needs the Manage Messages (Pin Messages) permission in the event channel`,
+        );
+        return false;
+      }
+      return true;
+    } catch (err) {
+      this.logger.warn(`Pinning the sign-up post failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
     }
   }
 
@@ -166,22 +212,30 @@ export class DiscordBotService {
     }
   }
 
-  /** Posts a plain-text message to the race-results channel (Admin → Discord Bot → results channel).
+  /** Posts a message to the race-results channel (Admin → Discord Bot → results channel). With an
+   * `embed` the embed is posted instead of the text, and the text is the fallback when Discord
+   * refuses the embed (so a result is never lost over formatting).
    * Best-effort like every other post: returns true only when Discord accepted it; false (and a log
    * line) when the token/channel isn't configured or Discord refuses — never throws. Mentions are
    * disabled; callers must escape user-controlled text (series/track names) themselves. */
-  async postResultsMessage(content: string): Promise<boolean> {
+  async postResultsMessage(content: string, embed?: DiscordEmbed): Promise<boolean> {
     const { token, channelId } = await this.discordBotSettingsService.getResultsPostingCredentials();
     if (!token || !channelId) {
       this.logger.warn('Discord bot token/results channel not configured (see Admin → Discord Bot) — skipping result message');
       return false;
     }
-    try {
-      const response = await fetch(`${DISCORD_API_BASE}/channels/${channelId}/messages`, {
+    const send = (body: Record<string, unknown>) =>
+      fetch(`${DISCORD_API_BASE}/channels/${channelId}/messages`, {
         method: 'POST',
         headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+        body: JSON.stringify({ ...body, allowed_mentions: { parse: [] } }),
       });
+    try {
+      let response = await send(embed ? { embeds: [embed] } : { content });
+      if (!response.ok && embed) {
+        this.logger.warn(`Discord result embed refused (${response.status}): ${await response.text()} — posting plain text instead`);
+        response = await send({ content });
+      }
       if (!response.ok) {
         this.logger.error(`Discord result message failed (${response.status}): ${await response.text()}`);
         return false;
@@ -312,7 +366,8 @@ export class DiscordBotService {
     categoryId: string;
     name: string;
     topic?: string;
-    starterContent: string;
+    /** The channel's first message; omitted = the channel starts empty (the sign-up post is put in it next). */
+    starterContent?: string;
   }): Promise<{ channelId: string; guildId: string }> {
     const token = await this.requireToken();
 
@@ -337,17 +392,19 @@ export class DiscordBotService {
     if (!channel.id) throw new BadGatewayException('Discord did not return the channel id.');
     this.guildIdByChannel.set(channel.id, category.guild_id);
 
-    try {
-      const messageResponse = await this.threadRequest(token, 'POST', `/channels/${channel.id}/messages`, {
-        content: input.starterContent,
-        flags: 1 << 2,
-        allowed_mentions: { parse: [] },
-      });
-      if (!messageResponse.ok) {
-        this.logger.warn(`Discord event channel ${channel.id} created but the first message failed (${messageResponse.status})`);
+    if (input.starterContent) {
+      try {
+        const messageResponse = await this.threadRequest(token, 'POST', `/channels/${channel.id}/messages`, {
+          content: input.starterContent,
+          flags: 1 << 2,
+          allowed_mentions: { parse: [] },
+        });
+        if (!messageResponse.ok) {
+          this.logger.warn(`Discord event channel ${channel.id} created but the first message failed (${messageResponse.status})`);
+        }
+      } catch (err) {
+        this.logger.warn(`Discord event channel ${channel.id} created but the first message failed: ${err instanceof Error ? err.message : String(err)}`);
       }
-    } catch (err) {
-      this.logger.warn(`Discord event channel ${channel.id} created but the first message failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     return { channelId: channel.id, guildId: category.guild_id };
   }
@@ -523,22 +580,40 @@ export class DiscordBotService {
       },
     );
 
-    containerComponents.push(
-      { type: ComponentType.SEPARATOR },
-      { type: ComponentType.TEXT_DISPLAY, content: `[Sign up on the members site](${eventUrl})` },
-    );
-
-    // Buttons only while signups are open; once the event closes, the next refresh simply
-    // rebuilds the post without them.
+    // The sign-up area, only while signups are open; once the event closes the next refresh rebuilds
+    // the post with a plain link to the event page instead.
     if (isEventOpenForSignups(event)) {
-      containerComponents.push({
-        type: ComponentType.ACTION_ROW,
-        components: [
-          { type: ComponentType.BUTTON, style: ButtonStyle.SUCCESS, label: 'Sign up', custom_id: `sg:${event.id}` },
-          { type: ComponentType.BUTTON, style: ButtonStyle.SECONDARY, label: 'Withdraw', custom_id: `wd:${event.id}` },
-          { type: ComponentType.BUTTON, style: ButtonStyle.LINK, label: 'Set my hours', url: eventUrl },
-        ],
-      });
+      containerComponents.push(
+        { type: ComponentType.SEPARATOR },
+        {
+          type: ComponentType.TEXT_DISPLAY,
+          // Discord can't colour text or link buttons, so the heading carries a green dot and the button an icon.
+          content: '## 🟢 Sign up\nChoose your start times, car class and available hours on the web app.',
+        },
+        {
+          type: ComponentType.ACTION_ROW,
+          components: [
+            { type: ComponentType.BUTTON, style: ButtonStyle.LINK, label: 'Sign up on the web app', emoji: { name: '🌐' }, url: eventUrl },
+          ],
+        },
+        // The quick way, in smaller text with quieter buttons.
+        {
+          type: ComponentType.TEXT_DISPLAY,
+          content: '-# Prefer Discord? Sign up here with just your start times and class, or withdraw.',
+        },
+        {
+          type: ComponentType.ACTION_ROW,
+          components: [
+            { type: ComponentType.BUTTON, style: ButtonStyle.SECONDARY, label: 'Sign up in Discord', custom_id: `sg:${event.id}` },
+            { type: ComponentType.BUTTON, style: ButtonStyle.SECONDARY, label: 'Withdraw', custom_id: `wd:${event.id}` },
+          ],
+        },
+      );
+    } else {
+      containerComponents.push(
+        { type: ComponentType.SEPARATOR },
+        { type: ComponentType.TEXT_DISPLAY, content: `[Open the event page](${eventUrl})` },
+      );
     }
 
     return {

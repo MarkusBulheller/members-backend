@@ -321,7 +321,7 @@ describe('DiscordInteractionsService', () => {
       expect(res.data?.components).toEqual([]);
       expect(res.data?.content).toBe(
         "✅ You're signed up for **GES Le Mans 24h**: 1st Sun 25 Oct · 09:00 UTC, 2nd Sat 24 Oct · 13:00 UTC, 3rd Sat 24 Oct · 20:00 UTC · GT3. " +
-          "Your hours are set to 'any stint' — tap **Set my hours** on the event post to give exact availability.",
+          "Your hours are set to 'any stint' — set your exact hours on the web app.",
       );
     });
 

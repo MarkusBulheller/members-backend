@@ -404,6 +404,8 @@ function fuelCheck(
   const title = 'No stint longer than a tank allows';
   if (team.stints.length === 0) return mk('team.stint-fuel', 'BLOCKER', 'PENDING', title, 'No stints planned yet.');
   const formationFuel = parseDecimal(team.formationLapFuelLiters) ?? 0;
+  const saveFactorFor = (percent: number | null) => 1 - Math.min(Math.max(percent ?? 0, 0), 50) / 100;
+  const teamSavePercent = parseDecimal(team.fuelSavePercent);
   const settingsByDriver = new Map(team.driverSettings.map((s) => [s.userId, s]));
 
   const problems: string[] = [];
@@ -416,7 +418,11 @@ function fuelCheck(
     const driverWet = parseDecimal(driver?.lapTimeWetSeconds);
     // Only an explicit wet override is known here; forecast-driven wet detection lives on the plan page.
     const lap = stint.wetOverride === true ? (driverWet ?? ctx.teamLapWet ?? driverDry ?? ctx.teamLapDry) : (driverDry ?? ctx.teamLapDry);
-    const fuel = parseDecimal(driver?.fuelUsagePerLapLiters) ?? ctx.teamFuelPerLap;
+    const baseFuel = parseDecimal(driver?.fuelUsagePerLapLiters) ?? ctx.teamFuelPerLap;
+    // The plan sizes stints on the planned fuel saving, so the tank check has to as well.
+    // A driver's own saving replaces the team's.
+    const fuel =
+      baseFuel === null ? null : baseFuel * saveFactorFor(parseDecimal(driver?.fuelSavePercent) ?? teamSavePercent);
     const max = maxStintMinutes(usableTankForStint(ctx.tankLiters, formationFuel, index === 0), fuel, lap);
     if (max === null) return;
     evaluated += 1;

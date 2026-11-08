@@ -30,4 +30,9 @@ export class EventTeamDriverSettings {
 
   @Column({ name: 'fuel_usage_per_lap_liters', type: 'decimal', precision: 5, scale: 3, nullable: true })
   fuelUsagePerLapLiters: string | null;
+
+  /** This driver's own fuel saving in percent, replacing the team's planned saving
+   * (EventTeam.fuelSavePercent) for their stints. Null = follow the team; 0 = cannot save. */
+  @Column({ name: 'fuel_save_percent', type: 'decimal', precision: 5, scale: 2, nullable: true })
+  fuelSavePercent: string | null;
 }

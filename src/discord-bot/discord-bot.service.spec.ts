@@ -32,6 +32,53 @@ function textOf(body: { components: { components: { content?: string }[] }[] }):
 
 afterEach(() => vi.unstubAllGlobals());
 
+describe('DiscordBotService announcement in a given channel', () => {
+  const okMessage = (channel: string) => ({ ok: true, status: 200, json: async () => ({ id: 'm1', channel_id: channel }) });
+
+  it('posts into the given channel instead of the events channel, and pins the post', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okMessage('own-chan'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const ref = await makeService().postEventAnnouncement(event, [], { channelId: 'own-chan', pin: true });
+
+    const calls = fetchMock.mock.calls.map(([url, init]) => `${(init as { method?: string }).method ?? 'GET'} ${url}`);
+    expect(calls).toEqual([
+      'POST https://discord.com/api/v10/channels/own-chan/messages',
+      'PUT https://discord.com/api/v10/channels/own-chan/pins/m1',
+    ]);
+    expect(ref).toEqual({ channelId: 'own-chan', messageId: 'm1' });
+  });
+
+  it('posts in the events channel and does not pin when nothing is asked for', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okMessage('chan-new'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await makeService().postEventAnnouncement(event, []);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://discord.com/api/v10/channels/chan-new/messages');
+  });
+
+  it('still returns the post when the pin is refused (missing permission)', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(okMessage('own-chan'))
+      .mockResolvedValueOnce({ ok: false, status: 403, text: async () => 'Missing Permissions' });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const ref = await makeService().postEventAnnouncement(event, [], { channelId: 'own-chan', pin: true });
+
+    expect(ref).toEqual({ channelId: 'own-chan', messageId: 'm1' });
+  });
+
+  it('posts nothing without a token, even with a channel given', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await makeService({ token: null as never, channelId: 'x' }).postEventAnnouncement(event, [], { channelId: 'own-chan', pin: true })).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('DiscordBotService announcement', () => {
   it('lists signups with class, in order, with a count', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'm', channel_id: 'c' }) });
@@ -120,20 +167,45 @@ describe('DiscordBotService signup buttons', () => {
   type Body = {
     components: { components: { type: number; components?: { type: number; style: number; label: string; custom_id?: string; url?: string }[] }[] }[];
   };
-  const actionRow = (body: Body) => body.components[0].components.find((c) => c.type === 1);
+  /** The quick row: Sign up in Discord and Withdraw (the row with interaction buttons). */
+  const actionRow = (body: Body) =>
+    body.components[0].components.find((c) => c.type === 1 && c.components?.some((b) => b.custom_id !== undefined));
+  /** The main sign-up: a row with the link button that opens the web app. */
+  const webRow = (body: unknown) =>
+    (body as Body).components[0].components.find((c) => c.type === 1 && c.components?.some((b) => b.style === 5));
 
-  it('attaches Sign up / Withdraw / Set my hours while the event is open', async () => {
+  it('puts the web app sign-up first, with its button below the heading, and the quick Discord sign-up and Withdraw in a quieter row', async () => {
     const fetchMock = okFetch();
     vi.stubGlobal('fetch', fetchMock);
 
     await makeService().postEventAnnouncement(openEvent, []);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
 
-    const row = actionRow(JSON.parse(fetchMock.mock.calls[0][1].body))!;
-    expect(row.components).toEqual([
-      { type: 2, style: 3, label: 'Sign up', custom_id: 'sg:ev1' },
-      { type: 2, style: 2, label: 'Withdraw', custom_id: 'wd:ev1' },
-      { type: 2, style: 5, label: 'Set my hours', url: 'http://127.0.0.1:3000/events/ev1' },
+    // main action: a heading, and right below it a row with the link button to the event page on the web app
+    const web = webRow(body)!;
+    expect(web.components).toEqual([
+      { type: 2, style: 5, label: 'Sign up on the web app', emoji: { name: '🌐' }, url: 'http://127.0.0.1:3000/events/ev1' },
     ]);
+    const parts = body.components[0].components as { type: number; content?: string }[];
+    const headingIndex = parts.findIndex((c) => c.type === 10 && c.content?.startsWith('## 🟢 Sign up'));
+    expect(headingIndex).toBeGreaterThan(-1);
+    expect(parts[headingIndex + 1]).toBe(parts.find((c) => c === (web as unknown)));
+
+    // the quiet row: the Discord sign-up (the interaction the bot already handles) and Withdraw
+    expect(actionRow(body)!.components).toEqual([
+      { type: 2, style: 2, label: 'Sign up in Discord', custom_id: 'sg:ev1' },
+      { type: 2, style: 2, label: 'Withdraw', custom_id: 'wd:ev1' },
+    ]);
+
+    // the web app row comes before the Discord row
+    expect(parts.indexOf(web as never)).toBeLessThan(parts.indexOf(actionRow(body) as never));
+  });
+
+  it('has no Set my hours button any more (the web app sign-up covers the hours)', async () => {
+    const fetchMock = okFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    await makeService().postEventAnnouncement(openEvent, []);
+    expect(fetchMock.mock.calls[0][1].body).not.toContain('Set my hours');
   });
 
   it('keeps buttons through an edit while open, and drops them once the event closes', async () => {
@@ -143,6 +215,7 @@ describe('DiscordBotService signup buttons', () => {
 
     await service.updateEventAnnouncement(openEvent, ref, []);
     expect(actionRow(JSON.parse(fetchMock.mock.calls[0][1].body))).toBeDefined();
+    expect(webRow(JSON.parse(fetchMock.mock.calls[0][1].body))).toBeDefined();
 
     for (const closed of [
       { ...openEvent, status: 'SIGNUPS_CLOSED' },
@@ -152,7 +225,11 @@ describe('DiscordBotService signup buttons', () => {
     ]) {
       fetchMock.mockClear();
       await service.updateEventAnnouncement(closed as unknown as Event, ref, []);
-      expect(actionRow(JSON.parse(fetchMock.mock.calls[0][1].body))).toBeUndefined();
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(actionRow(body)).toBeUndefined();
+      expect(webRow(body)).toBeUndefined();
+      // closed: just a plain link to the event page remains
+      expect(JSON.stringify(body)).toContain('[Open the event page](http://127.0.0.1:3000/events/ev1)');
     }
   });
 

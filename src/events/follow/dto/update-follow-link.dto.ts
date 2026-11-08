@@ -15,4 +15,14 @@ export class UpdateFollowLinkDto {
   @IsOptional()
   @IsBoolean()
   regenerate?: boolean;
+
+  /** The private strategy link (fuel and tyres on top of the public data): true = turn on, false = revoke. */
+  @IsOptional()
+  @IsBoolean()
+  strategyEnabled?: boolean;
+
+  /** true = replace the strategy token; the old strategy link stops working immediately. */
+  @IsOptional()
+  @IsBoolean()
+  regenerateStrategy?: boolean;
 }

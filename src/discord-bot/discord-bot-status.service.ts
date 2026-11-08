@@ -95,22 +95,21 @@ export class DiscordBotStatusService {
     status.inGuild = true;
     const botRoleIds: string[] = member.roles;
 
-    if (!channelId) {
-      return status;
-    }
-
-    try {
-      const permissions = await this.computeChannelPermissions(token, guildId, channelId, botUserId, botRoleIds);
-      if (permissions === null) {
-        status.error = 'Could not read the configured channel or its permissions — check the channel ID.';
+    if (channelId) {
+      try {
+        const permissions = await this.computeChannelPermissions(token, guildId, channelId, botUserId, botRoleIds);
+        if (permissions === null) {
+          status.error = 'Could not read the configured channel or its permissions — check the channel ID.';
+          return status;
+        }
+        const missing = REQUIRED_PERMISSIONS.filter((p) => (permissions & p.bit) !== p.bit);
+        status.channelPermissionsOk = missing.length === 0;
+        status.missingPermissions = missing.map((p) => p.label);
+      } catch (err) {
+        this.logger.warn('Failed computing Discord channel permissions', err instanceof Error ? err.stack : String(err));
+        status.error = 'Failed checking channel permissions — see server logs.';
         return status;
       }
-      const missing = REQUIRED_PERMISSIONS.filter((p) => (permissions & p.bit) !== p.bit);
-      status.channelPermissionsOk = missing.length === 0;
-      status.missingPermissions = missing.map((p) => p.label);
-    } catch (err) {
-      this.logger.warn('Failed computing Discord channel permissions', err instanceof Error ? err.stack : String(err));
-      status.error = 'Failed checking channel permissions — see server logs.';
     }
 
     return status;

@@ -38,7 +38,7 @@ export function formatDriveMs(ms: number): string {
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
 
-function ordinalSuffix(n: number): string {
+export function ordinalSuffix(n: number): string {
   const mod100 = n % 100;
   if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
   switch (n % 10) {

@@ -183,6 +183,7 @@ export class ReadinessService {
         lapTimeDrySeconds: team.lapTimeDrySeconds,
         lapTimeWetSeconds: team.lapTimeWetSeconds,
         fuelUsagePerLapLiters: team.fuelUsagePerLapLiters,
+        fuelSavePercent: team.fuelSavePercent,
         raceStartOffsetMinutes: team.raceStartOffsetMinutes,
         formationLapFuelLiters: team.formationLapFuelLiters,
         carTankCapacityLiters: team.carId ? (carTankById.get(team.carId) ?? null) : null,
@@ -218,6 +219,7 @@ export class ReadinessService {
           lapTimeDrySeconds: s.lapTimeDrySeconds,
           lapTimeWetSeconds: s.lapTimeWetSeconds,
           fuelUsagePerLapLiters: s.fuelUsagePerLapLiters,
+          fuelSavePercent: s.fuelSavePercent,
         })),
       })),
       signups: signups.map((s) => ({

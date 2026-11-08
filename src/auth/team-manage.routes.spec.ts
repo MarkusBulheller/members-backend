@@ -80,6 +80,10 @@ const EXPECTED: Record<string, Kind> = {
   'EventChannelController.ensure': 'ADMIN',
   'FollowLinkController.get': lead(),
   'FollowLinkController.update': lead(),
+  'FollowLinkController.publishPlan': lead(),
+  'PlanBaselineController.get': 'MEMBER',
+  'PlanBaselineController.set': lead(),
+  'PlanBaselineController.clear': lead(),
   'PublicFollowController.getState': 'PUBLIC',
   'PublicFollowController.stream': 'PUBLIC',
 
@@ -165,6 +169,9 @@ describe('route permission map (events module, incl. the team-lead admin routes)
         'EventTeamDummyDriversController.remove',
         'FollowLinkController.get',
         'FollowLinkController.update',
+        'FollowLinkController.publishPlan',
+        'PlanBaselineController.set',
+        'PlanBaselineController.clear',
       ].sort(),
     );
   });
@@ -180,6 +187,7 @@ describe('route permission map (events module, incl. the team-lead admin routes)
       'EventTeamDriverSettingsController',
       'EventTeamDummyDriversController',
       'FollowLinkController',
+      'PlanBaselineController',
     ];
     for (const controller of controllersUnderTest().filter((c) => planControllers.includes(c.name))) {
       expect(String(Reflect.getMetadata(PATH_METADATA, controller))).toContain(':teamId');

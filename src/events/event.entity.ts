@@ -11,6 +11,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { EventStatus } from '../common/enums/event-status.enum.js';
+import { EventKind } from '../common/enums/event-kind.enum.js';
 import { Sim } from '../common/enums/sim.enum.js';
 import { Track } from '../tracks/track.entity.js';
 import { EventTimeslot } from './event-timeslot.entity.js';
@@ -70,6 +71,10 @@ export class Event {
    * event. Only gates iRacing-specific extras (series/weather linking, team roster checks). */
   @Column({ type: 'enum', enum: Sim, default: Sim.IRACING })
   sim: Sim;
+
+  /** SPECIAL (default) or WEEKLY series; decides which Discord channel the sign-up post goes to. */
+  @Column({ type: 'varchar', length: 10, default: EventKind.SPECIAL })
+  kind: EventKind;
 
   /** iRacing only: the session limits how full the tank can be filled, as a percentage of the
    * car's max (e.g. 98.00 = 98%). Null = no limit. Decimal columns come back as strings, same

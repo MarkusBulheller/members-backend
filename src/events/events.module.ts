@@ -30,6 +30,8 @@ import { PublicEventsController } from './public-events.controller.js';
 import { TeamPlanEventsService } from './team-plan-events.service.js';
 import { TeamPlanPresenceService } from './team-plan-presence.service.js';
 import { TeamPlanStreamController } from './team-plan-stream.controller.js';
+import { PlanBaselineController } from './plan-baseline.controller.js';
+import { PlanBaselineService } from './plan-baseline.service.js';
 import { FollowLinkController } from './follow/follow-link.controller.js';
 import { FollowLinkService } from './follow/follow-link.service.js';
 import { FollowStateService } from './follow/follow-state.service.js';
@@ -78,6 +80,7 @@ import { EventChannelService } from './event-channel.service.js';
     PublicEventsController,
     TeamPlanStreamController,
     FollowLinkController,
+    PlanBaselineController,
     PublicFollowController,
     ReadinessController,
     EventTeamThreadController,
@@ -94,6 +97,7 @@ import { EventChannelService } from './event-channel.service.js';
     TeamPlanEventsService,
     TeamPlanPresenceService,
     FollowLinkService,
+    PlanBaselineService,
     FollowStateService,
     FollowStreamService,
     ReadinessService,

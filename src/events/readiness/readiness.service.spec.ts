@@ -47,6 +47,7 @@ function build({ event, forecast }: Setup = {}) {
     lapTimeDrySeconds: '100',
     lapTimeWetSeconds: null,
     fuelUsagePerLapLiters: '3',
+    fuelSavePercent: null,
     raceStartOffsetMinutes: null,
     formationLapFuelLiters: null,
   });

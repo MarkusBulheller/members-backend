@@ -196,6 +196,34 @@ describe('EventChannelService.ensureChannel', () => {
   });
 });
 
+describe('EventChannelService.channelIdForAnnouncement', () => {
+  it('creates the event channel empty (no details message) and stores it', async () => {
+    const { service, discordBot, eventsRepository } = setup();
+    expect(await service.channelIdForAnnouncement('e1')).toBe('ch1');
+    const call = discordBot.createEventChannel.mock.calls[0][0] as { categoryId: string; starterContent?: string };
+    expect(call.categoryId).toBe('cat1');
+    expect(call.starterContent).toBeUndefined();
+    expect(eventsRepository.update).toHaveBeenCalledWith({ id: 'e1' }, { discordEventChannelId: 'ch1' });
+  });
+
+  it('reuses the channel the Discord channel button already made', async () => {
+    const { service, discordBot } = setup({ id: 'e1', discordEventChannelId: 'ch9' });
+    expect(await service.channelIdForAnnouncement('e1')).toBe('ch9');
+    expect(discordBot.createEventChannel).not.toHaveBeenCalled();
+  });
+
+  it('returns null instead of throwing when there is no event category or Discord refuses', async () => {
+    const noCategory = setup();
+    noCategory.discordBot.getEventCategoryId.mockRejectedValue(new BadRequestException('Set the event category first'));
+    expect(await noCategory.service.channelIdForAnnouncement('e1')).toBeNull();
+
+    const refused = setup();
+    refused.discordBot.createEventChannel.mockRejectedValue(new Error('Discord refused'));
+    expect(await refused.service.channelIdForAnnouncement('e1')).toBeNull();
+    expect(refused.eventsRepository.update).not.toHaveBeenCalled();
+  });
+});
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe('DiscordBotService.createEventChannel', () => {

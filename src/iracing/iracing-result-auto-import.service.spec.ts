@@ -6,6 +6,7 @@ import {
   IracingResultAutoImportService,
   MAX_IMPORTS_PER_RUN,
   MAX_TRIES,
+  MIN_TEAM_DRIVERS,
   SEARCH_LOOKBACK_MS,
   TOKEN_ALERT_INTERVAL_MS,
 } from './iracing-result-auto-import.service.js';
@@ -74,6 +75,8 @@ interface HarnessOptions {
   token?: string | null;
   rows?: ReturnType<typeof searchRow>[];
   alertUserId?: string | null;
+  /** What the team's driver-count lookup returns for every session (default 2). */
+  driverCount?: number;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -92,7 +95,10 @@ function makeHarness(options: HarnessOptions = {}) {
   const results = fakeRepository(options.results ?? [], 'res');
   const settings = { getRow: vi.fn(async () => settingsRow), recordRun: vi.fn().mockResolvedValue(undefined) };
   const adminToken = { getSystemAccessToken: vi.fn().mockResolvedValue(options.token === undefined ? 'tok' : options.token) };
-  const iracing = { searchTeamResultRows: vi.fn().mockResolvedValue(options.rows ?? []) };
+  const iracing = {
+    searchTeamResultRows: vi.fn().mockResolvedValue(options.rows ?? []),
+    fetchTeamDriverCount: vi.fn().mockResolvedValue(options.driverCount ?? 2),
+  };
   const raceResults = {
     importWithOptions: vi.fn(async (subsessionId: number) => ({
       id: `result-${subsessionId}`,
@@ -290,6 +296,44 @@ describe('IracingResultAutoImportService.run - discovery window', () => {
     expect(h.attempts.rows.filter((row) => row.subsessionId === 1)).toHaveLength(0);
   });
 
+  it('picks up a result with exactly the minimum number of drivers', async () => {
+    const h = makeHarness({ rows: [searchRow(2, 25)], driverCount: MIN_TEAM_DRIVERS });
+    const summary = await h.service.run();
+    expect(h.iracing.fetchTeamDriverCount).toHaveBeenCalledWith('tok', 2, 100);
+    expect(summary.found).toBe(1);
+    expect(h.attempts.rows[0].status).toBe('FOUND');
+  });
+
+  it('records a solo result as IGNORED with the reason and neither announces nor imports it', async () => {
+    const h = makeHarness({ settings: { mode: 'AUTO' }, rows: [searchRow(2, 25)], driverCount: 1 });
+    const summary = await h.service.run();
+    expect(summary).toMatchObject({ status: 'OK', found: 0, imported: 0 });
+    expect(h.attempts.rows[0]).toMatchObject({ subsessionId: 2, status: 'IGNORED' });
+    expect(h.attempts.rows[0].lastError).toContain('1 driver');
+    expect(h.raceResults.importWithOptions).not.toHaveBeenCalled();
+    expect(h.discord.postResultsMessage).not.toHaveBeenCalled();
+    expect(h.teams.rows[0].lastCheckedAt).toEqual(NOW);
+  });
+
+  it('does not look a skipped solo result up again on the next run', async () => {
+    const h = makeHarness({ rows: [searchRow(2, 25)], driverCount: 1 });
+    await h.service.run();
+    await h.service.run();
+    expect(h.iracing.fetchTeamDriverCount).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not advance lastCheckedAt when the driver count cannot be fetched, so it is retried', async () => {
+    const h = makeHarness({ rows: [searchRow(2, 25)] });
+    h.iracing.fetchTeamDriverCount.mockRejectedValueOnce(new Error('iRacing is down'));
+    const summary = await h.service.run();
+    expect(summary.status).toBe('ERROR');
+    expect(h.attempts.rows).toHaveLength(0);
+    expect(h.teams.rows[0].lastCheckedAt).toBeNull();
+
+    await h.service.run();
+    expect(h.attempts.rows[0].status).toBe('FOUND');
+  });
+
   it('marks an existing FOUND attempt IMPORTED when the result was imported by hand meanwhile', async () => {
     const h = makeHarness({
       rows: [searchRow(1, 30)],
@@ -370,6 +414,9 @@ describe('IracingResultAutoImportService.run - AUTO mode', () => {
     expect(message).toContain('99 laps');
     expect(message).toContain('4 incidents');
     expect(message).toContain('/results/result-2');
+    const embed = h.discord.postResultsMessage.mock.calls[0][1] as { url: string; title: string };
+    expect(embed.url).toContain('/results/result-2');
+    expect(embed.title).toContain('IMSA Endurance');
   });
 
   it(`imports at most ${MAX_IMPORTS_PER_RUN} per run and picks up the rest next run`, async () => {

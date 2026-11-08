@@ -176,6 +176,25 @@ ALTER TABLE discord_bot_settings ADD COLUMN IF NOT EXISTS event_category_id varc
 -- iRacing teams added by hand (teams we are not a member of / that no longer exist)
 ALTER TABLE iracing_teams ADD COLUMN IF NOT EXISTS manual boolean NOT NULL DEFAULT false;
 
+-- Fuel strategy: planned fuel saving and the final stint's safety margin
+ALTER TABLE event_teams ADD COLUMN IF NOT EXISTS fuel_save_percent numeric(5,2) NULL;
+ALTER TABLE event_teams ADD COLUMN IF NOT EXISTS finish_margin_laps numeric(4,1) NULL;
+ALTER TABLE event_team_driver_settings ADD COLUMN IF NOT EXISTS fuel_save_percent numeric(5,2) NULL;
+
+-- Weekly series events: the event type
+ALTER TABLE events ADD COLUMN IF NOT EXISTS kind varchar(10) NOT NULL DEFAULT 'SPECIAL';
+
+-- The original plan that "vs plan" is measured against
+ALTER TABLE event_teams ADD COLUMN IF NOT EXISTS plan_baseline jsonb NULL;
+
+-- Race mode (the plan page asks for confirmation before changes)
+ALTER TABLE event_teams ADD COLUMN IF NOT EXISTS race_mode boolean NOT NULL DEFAULT false;
+
+-- Private strategy link for the OBS overlay, and the plan the planner publishes for it
+ALTER TABLE event_teams ADD COLUMN IF NOT EXISTS strategy_token varchar(64) NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_event_teams_strategy_token ON event_teams (strategy_token) WHERE strategy_token IS NOT NULL;
+ALTER TABLE event_teams ADD COLUMN IF NOT EXISTS published_plan jsonb NULL;
+
 CREATE INDEX IF NOT EXISTS idx_race_result_laps_race_result_id ON race_result_laps (race_result_id);
 CREATE INDEX IF NOT EXISTS idx_race_result_laps_driver_profile_id ON race_result_laps (driver_profile_id);
 CREATE INDEX IF NOT EXISTS idx_race_result_driver_stints_race_result_id ON race_result_driver_stints (race_result_id);
@@ -335,8 +354,8 @@ Members and guest drivers can sign up straight from the event post in Discord. T
 2. In the members portal, open **Admin → Discord bot**. Paste the Public Key, enter your own Discord user ID (you get a direct message there when someone who is not linked tries to sign up), and save.
 3. On the same page, copy the **Interactions endpoint URL** (it is `https://api.wheel2wheel.racing/discord/interactions`) and paste it into the Developer Portal under **General Information → Interactions Endpoint URL**, then save. Discord checks it immediately. If the check fails, the Public Key is usually wrong.
 4. For the direct messages to reach you, you must share a server with the bot and allow direct messages from server members.
-5. Check that `FRONTEND_URL` is set in `/opt/w2w/members-backend/.env` to the portal's address. The "Set my hours" button in the Discord post links to it.
-6. Test with one new event: publish it, then click **Sign up** in the Discord post. Only events published after this release get the buttons. Older posts are not tracked.
+5. Check that `FRONTEND_URL` is set in `/opt/w2w/members-backend/.env` to the portal's address. The big **Sign up on the web app** button in the Discord post links to it.
+6. Test with one new event: publish it, then click **Sign up in Discord** in the post (the small buttons under the web app sign-up). Only events published after this release get the buttons. Older posts are not tracked.
 
 How people are recognised:
 
@@ -381,6 +400,7 @@ Off for every team until you switch it on, per team.
 - **Team leads:** an admin picks them per event crew, on the crew's plan page under "Per-driver pace & fuel" → **Team lead** (only drivers placed on that crew can be chosen, up to 5). A lead can plan only that crew in that event (stints, planning settings, driver settings, guest drivers, availability, live link). Cars, start times, moving drivers, events and everything under Admin stay admin-only. A lead who is moved off the crew or cancels loses access immediately.
 - **Discord thread per crew:** on a team's stint plan (admin), click **Discord thread** (one thread per crew, with a stint plan summary). The bot needs View Channel, Send Messages, Create Public Threads and Send Messages in Threads in the events channel. It uses the existing events channel, bot token and `FRONTEND_URL`.
 - **Discord channel per event:** on the event page (admin), click **Discord channel** to create a new text channel for the whole event. First set Admin → Discord Bot → **Event category ID** (right-click the category in Discord → Copy Category ID). The bot additionally needs **Manage Channels** (on the server or on that category). The channel inherits the category permissions and starts with the event details.
+- **Weekly series events:** when you create or edit an event, pick the type **Weekly series** (the default is **Special event**). When a weekly event is **published**, its own Discord channel is created automatically (in the **Event category**, set above) and the sign-up is posted in it and **pinned**. The bot needs **Manage Channels** (as above) and **Manage Messages** (to pin) there. Without an event category a weekly event gets no sign-up post (it never goes to the events channel); if the channel could not be made, unpublish and publish the event again after fixing it. Special events are unchanged: sign-up in the events channel, a channel on demand with the **Discord channel** button.
 - **Team recap:** the **Recap** page (under Racing, after Results) needs nothing extra. It reads imported results and is cached for 5 minutes.
 
 ## If something goes wrong
